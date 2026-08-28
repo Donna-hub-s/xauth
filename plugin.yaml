@@ -1,0 +1,140 @@
+name: auth
+version: 1.0.0
+author: xcore
+description: >
+  Plugin d'authentification enterprise — multi-tenant, RBAC, audit log,
+  invitations par lien, MFA TOTP, JWT RS256, OAuth (Google/GitHub/Discord/Microsoft).
+
+execution_mode: trusted
+entry_point: src/main.py
+framework_version: ">=2.0.0"
+
+# ── Application ───────────────────────────────────────────────────────────────
+app:
+  name: "XAuth"
+  base_url: "http://localhost:8000"
+
+# ── Seed — tenant et compte admin créés au démarrage ─────────────────────────
+# Toutes les valeurs sont overridables via les variables d'environnement
+# correspondantes (ADMIN_EMAIL, ADMIN_PASSWORD, etc.)
+seed:
+  admin_email: "contact@xcorehub.dev"
+  # Jamais de mot de passe en dur ici — doit être fourni via la variable
+  # d'environnement ADMIN_PASSWORD (voir env: ci-dessous). Vide ici =
+  # build_seed_cfg() (services/seed.py) échoue explicitement au démarrage
+  # si ADMIN_PASSWORD n'est pas défini, plutôt que de seeder un compte
+  # admin avec un mot de passe public connu (trouvé en clair ici jusqu'à
+  # ce commit, et toujours présent dans l'historique git).
+  admin_password: ""
+  admin_tenant_slug: "default"
+  admin_tenant_name: "Default"
+  admin_role_name: "admin"
+  user_role_name: "user"
+
+# ── JWT ───────────────────────────────────────────────────────────────────────
+jwt:
+  private_key_path: "conf/private.pem"
+  public_key_path: "conf/public.pem"
+  access_expire_minutes: 15
+  refresh_expire_days: 7
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+# Limites par route — format: "/chemin": [max_requetes, fenetre_secondes]
+# Mettre enabled: false pour désactiver en développement.
+rate_limit:
+  enabled: true
+  routes: {}
+
+# ── Variables d'environnement ─────────────────────────────────────────────────
+# Réservées aux secrets qui ne doivent PAS apparaître en clair dans ce fichier.
+# Les valeurs des sections app/seed/jwt ci-dessus prennent le dessus si la
+# variable d'env est absente ou vide.
+
+envconfiguration:
+  inject: true
+  env_file: .env
+
+env:
+  # Overrides admin seed (optionnels — la section seed: est la source par défaut)
+  ADMIN_EMAIL: "${ADMIN_EMAIL}"
+  ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+  ADMIN_TENANT_SLUG: "${ADMIN_TENANT_SLUG}"
+  ADMIN_TENANT_NAME: "${ADMIN_TENANT_NAME}"
+  ADMIN_ROLE_NAME: "${ADMIN_ROLE_NAME}"
+  USER_ROLE_NAME: "${USER_ROLE_NAME}"
+
+  # Overrides JWT (optionnels — la section jwt: est la source par défaut)
+  JWT_PRIVATE_KEY_PATH: "${XAUTH_JWT_PRIVATE_KEY_PATH}"
+  JWT_PUBLIC_KEY_PATH: "${XAUTH_JWT_PUBLIC_KEY_PATH}"
+  JWT_ACCESS_EXPIRE_MINUTES: "${XAUTH_JWT_ACCESS_EXPIRE_MINUTES}"
+  JWT_REFRESH_EXPIRE_DAYS: "${XAUTH_JWT_REFRESH_EXPIRE_DAYS}"
+
+  # App URL (optionnel — la section app: est la source par défaut)
+  APP_BASE_URL: "${XAUTH_APP_BASE_URL}"
+  APP_NAME: "${XAUTH_APP_NAME}"
+
+  # Frontend SPA (marketplace.xcorehub.dev) — cible du redirect navigateur
+  # à la fin du flow OAuth (voir routes/oauth.py::callback). Sans ça, le
+  # callback n'a nulle part où renvoyer le navigateur et retombe sur le
+  # host API lui-même (voir _default_redirect). WEB_REDIRECT_ORIGINS est
+  # l'allowlist d'origines pour le paramètre ?redirect= envoyé par le
+  # frontend (authApi.oauthUrl) — sans elle, n'importe quel appelant
+  # pourrait faire rediriger le navigateur (avec les tokens fraîchement
+  # émis en query string) vers un domaine arbitraire (open redirect).
+  WEB_APP_URL: "${XAUTH_WEB_APP_URL}"
+  OAUTH_WEB_REDIRECT_ORIGINS: "${XAUTH_OAUTH_WEB_REDIRECT_ORIGINS}"
+
+
+  # OAuth providers — secrets, toujours via env
+  OAUTH_GOOGLE_CLIENT_ID: "${XAUTH_OAUTH_GOOGLE_CLIENT_ID}"
+  OAUTH_GOOGLE_CLIENT_SECRET: "${XAUTH_OAUTH_GOOGLE_CLIENT_SECRET}"
+  OAUTH_GITHUB_CLIENT_ID: "${XAUTH_OAUTH_GITHUB_CLIENT_ID}"
+  OAUTH_GITHUB_CLIENT_SECRET: "${XAUTH_OAUTH_GITHUB_CLIENT_SECRET}"
+  OAUTH_DISCORD_CLIENT_ID: "${XAUTH_OAUTH_DISCORD_CLIENT_ID}"
+  OAUTH_DISCORD_CLIENT_SECRET: "${XAUTH_OAUTH_DISCORD_CLIENT_SECRET}"
+  OAUTH_MICROSOFT_CLIENT_ID: "${XAUTH_OAUTH_MICROSOFT_CLIENT_ID}"
+  OAUTH_MICROSOFT_CLIENT_SECRET: "${XAUTH_OAUTH_MICROSOFT_CLIENT_SECRET}"
+
+  # Chiffrement des jetons OAuth tiers (Gmail/Calendar...) stockés en base —
+  # voir src/services/crypto.py. Distinct des clés JWT (identité xauth). Clé
+  # déjà présente en .env (jamais consommée jusqu'ici, service.py en parlait
+  # sans que rien ne la lise réellement).
+  OAUTH_TOKEN_KEY: "${XAUTH_OAUTH_TOKEN_KEY}"
+
+# ── Permissions inter-plugins ─────────────────────────────────────────────────
+permissions:
+  - resource: "registry"
+    actions: ["*"]
+    effect: allow
+  - resource: network
+    description: "Échange de jetons OAuth (Google/GitHub/Discord/Microsoft) via httpx"
+  # Vide = deny_all côté PermissionEngine (même règle que xdevkeys pour son
+  # propre namespace "devkeys.*") — sans cette ligne, les actions IPC
+  # exposées par src/ipc.py (xauth.get_user, xauth.verify_token, xauth.
+  # has_permission, xauth.get_tenant, xauth.create_invite, xauth.log_event)
+  # sont injoignables par tout autre plugin malgré leur présence dans le
+  # code. Constaté en conditions réelles : marketplace.get_plugin appelle
+  # xauth.get_user pour enrichir dev_mail — toujours refusé (permission
+  # denied), la fonctionnalité se dégrade silencieusement (dev_mail jamais
+  # renseigné) au lieu de simplement fonctionner.
+  - resource: "xauth.*"
+    actions: ["*"]
+    effect: allow
+
+# ── Ressources ────────────────────────────────────────────────────────────────
+resources:
+  timeout_seconds: 30
+  max_memory_mb: 256
+  rate_limit:
+    calls: 1000
+    period_seconds: 60
+
+# ── Runtime ───────────────────────────────────────────────────────────────────
+runtime:
+  health_check:
+    enabled: true
+    interval_seconds: 60
+    timeout_seconds: 5
+  retry:
+    max_attempts: 3
+    backoff_seconds: 2.0
