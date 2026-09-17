@@ -131,6 +131,7 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
             app_name=app_name,
             email_ext=email_ext,
             app_base_url=app_base_url,
+            web_app_url=web_app_url,
         )
 
         register_auth_backend(
@@ -258,7 +259,7 @@ def _auth_router_with_db(
                     template="welcome",
                     context={
                         "username": user.email,
-                        "login_url": f"{email_service.auth.base_url}/login",
+                        "login_url": f"{email_service.auth.web_url}/login",
                     },
                 )
                 return user

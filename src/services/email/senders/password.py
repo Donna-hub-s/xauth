@@ -13,7 +13,8 @@ class PasswordEmailSender(EmailTransport):
         reset_token: str,
         expires_minutes: int = 30,
     ) -> bool:
-        reset_url = f"{self.base_url}/xauth/password/reset?token={reset_token}"
+        # Page du frontend (sans langue : le frontend redirige vers /fr/… ou /en/…).
+        reset_url = f"{self.web_url}/reset-password?token={reset_token}"
         return await self.send(
             to=to,
             subject="Réinitialisation de votre mot de passe",
