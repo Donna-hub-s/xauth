@@ -183,6 +183,11 @@ def oauth_router(
             params["linked"] = result["linked"]
         elif result.get("link_error"):
             params["link_error"] = result["link_error"]
+        elif result.get("mfa_required") and result.get("mfa_token"):
+            # Compte protégé par MFA : aucun jeton avant le code. Le frontend
+            # garde mfa_token (court, usage unique) et demande le code TOTP
+            # (POST /auth/mfa/verify-login).
+            params["mfa_token"] = result["mfa_token"]
         elif result.get("access_token"):
             params["access_token"] = result["access_token"]
             if result.get("refresh_token"):
