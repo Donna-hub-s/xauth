@@ -14,7 +14,8 @@ class InviteEmailSender(EmailTransport):
         invited_by: str,
         expires_hours: int = 72,
     ) -> bool:
-        accept_url = f"{self.base_url}/xauth/invites/accept?token={invite_token}"
+        # Page du frontend (sans langue : le frontend redirige vers /fr/… ou /en/…).
+        accept_url = f"{self.web_url}/invitation?token={invite_token}"
         return await self.send(
             to=to,
             subject=f"Vous êtes invité à rejoindre {tenant_name}",

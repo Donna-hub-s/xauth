@@ -77,14 +77,15 @@ class AuthService:
         events: XAuthEvents | None = None,
         cache: Any = None,
         user_role_name: str = "user",
-        admin_role_name: str = "admin",
+        owner_role_name: str = "owner",
     ) -> None:
         self._session = session
         self._token = token_service
         self._events = events
         self._cache = cache
         self._user_role_name = user_role_name
-        self._admin_role_name = admin_role_name
+        # Rôle attribué au créateur d'un espace (setup_create_tenant).
+        self._owner_role_name = owner_role_name
 
     async def register(
         self,
@@ -546,7 +547,8 @@ class AuthService:
         ip_address: Optional[str] = None,
     ) -> dict[str, Any]:
         """
-        Crée un nouveau tenant et y rattache l'utilisateur comme owner (rôle admin).
+        Crée un nouveau tenant et y rattache l'utilisateur comme responsable
+        (rôle owner, limité à cet espace — jamais le rôle admin global).
         Réservé aux sessions en attente de setup (tenant_id = None, needs_tenant_setup).
         """
         from ..models.tenant import Tenant
@@ -564,11 +566,11 @@ class AuthService:
 
         role_repo = RoleRepository(self._session)
         global_roles = await role_repo.list_for_tenant(None)
-        admin_role = next((r for r in global_roles if r.name == self._admin_role_name), None)
-        if admin_role is None:
+        owner_role = next((r for r in global_roles if r.name == self._owner_role_name), None)
+        if owner_role is None:
             _logger.warning(
-                "[xauth] Rôle admin '%s' introuvable — owner créé sans rôle pour le tenant %s",
-                self._admin_role_name,
+                "[xauth] Rôle '%s' introuvable — responsable créé sans rôle pour le tenant %s",
+                self._owner_role_name,
                 slug,
             )
 
@@ -576,7 +578,7 @@ class AuthService:
         membership = TenantMember(
             user_id=session.user_id,
             tenant_id=tenant.id,
-            role_id=admin_role.id if admin_role else None,
+            role_id=owner_role.id if owner_role else None,
             is_owner=True,
         )
         await member_repo.save(membership)

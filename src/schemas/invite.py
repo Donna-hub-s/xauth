@@ -1,19 +1,28 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class InviteCreate(BaseModel):
     tenant_id: str
     email: EmailStr
     role_id: Optional[str] = None
-    expires_hours: int = 72
+    expires_hours: int = Field(default=72, ge=1, le=24 * 14)
 
 
 class AcceptInviteRequest(BaseModel):
     token: str
-    user_id: str
+    # Ignoré : l'utilisateur est celui du jeton. Conservé pour compatibilité.
+    user_id: Optional[str] = None
+
+
+class InvitePreview(BaseModel):
+    """Aperçu public d'une invitation (page d'acceptation) : ni jeton, ni identifiants internes."""
+    tenant_name: str
+    email: str
+    expires_at: datetime
+    valid: bool
 
 
 class InviteResponse(BaseModel):
