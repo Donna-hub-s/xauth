@@ -34,11 +34,12 @@ def sessions_router(db: Any, token_service: TokenService, cache: Any = None) -> 
     # corrèle via un mfa_token dédié à usage unique — voir AuthService.
     # _finalize_login / verify_mfa_login.
 
-    @router.get("/auth/sessions", response_model=List[SessionResponse])
+    @router.get("/sessions", response_model=List[SessionResponse])
     async def list_sessions(
         current_user: AuthPayload = Depends(get_current_user),
     ) -> Any:
         """Liste toutes les sessions actives de l'utilisateur connecté."""
+        current_jti = (current_user.get("user") or {}).get("jti")
         async with db.session() as session:
             repo = SessionRepository(session)
             sessions = await repo.get_active_sessions_for_user(current_user["sub"])
@@ -50,11 +51,12 @@ def sessions_router(db: Any, token_service: TokenService, cache: Any = None) -> 
                     "device_fingerprint": s.device_fingerprint,
                     "last_seen": s.last_seen.isoformat(),
                     "expires_at": s.expires_at.isoformat(),
+                    "is_current": bool(current_jti) and s.last_jti == current_jti,
                 }
                 for s in sessions
             ]
 
-    @router.delete("/auth/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+    @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def revoke_session(
         session_id: str,
         current_user: AuthPayload = Depends(get_current_user),
@@ -76,7 +78,7 @@ def sessions_router(db: Any, token_service: TokenService, cache: Any = None) -> 
             target.is_revoked = True
             await session.commit()
 
-    @router.delete("/auth/sessions", status_code=status.HTTP_204_NO_CONTENT)
+    @router.delete("/sessions", status_code=status.HTTP_204_NO_CONTENT)
     async def revoke_all_sessions(
         current_user: AuthPayload = Depends(get_current_user),
     ) -> None:

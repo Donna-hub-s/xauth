@@ -105,12 +105,13 @@ OWNER_PERMISSIONS: list[str] = [
     "invite:create",
     "invite:revoke",
     "user:read",
+    # N'ouvre WhatsApp que dans l'espace rattaché au numéro
+    # (DONNA_WHATSAPP_TENANT_ID, app/chat/src/access.py) : sans effet ailleurs.
+    "donna:whatsapp",
 ]
 
 # Permissions qu'un responsable d'espace peut accorder à un rôle de SON espace.
-TENANT_ASSIGNABLE_PERMISSIONS: frozenset[str] = frozenset(OWNER_PERMISSIONS) | frozenset(USER_PERMISSIONS) | {
-    "donna:whatsapp"
-}
+TENANT_ASSIGNABLE_PERMISSIONS: frozenset[str] = frozenset(OWNER_PERMISSIONS) | frozenset(USER_PERMISSIONS)
 
 # ── Fonctions seed ────────────────────────────────────────────────────────────
 

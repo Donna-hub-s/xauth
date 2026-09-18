@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,7 +45,7 @@ class MFAService:
         await self._session.flush()
 
         totp = pyotp.TOTP(secret)
-        uri = totp.provisioning_uri(name=user.email, issuer_name="xauth")
+        uri = totp.provisioning_uri(name=user.email, issuer_name="DONNA")
 
         return {
             "secret": secret,

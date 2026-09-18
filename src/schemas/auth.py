@@ -79,6 +79,9 @@ class UserResponse(BaseModel):
     email: str
     is_active: bool
     mfa_enabled: bool
+    # Jamais le hash lui-même — juste de quoi choisir entre "changer" et
+    # "définir" un mot de passe côté interface (comptes créés par OAuth).
+    has_password: bool
 
     class Config:
         from_attributes = True

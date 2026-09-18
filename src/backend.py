@@ -87,7 +87,11 @@ class XAuthBackend:
             permissions=permissions,
             user={
                 "email": user.email,
-                "tenant_id": tenant_id
+                "tenant_id": tenant_id,
+                # Jamais exposé à l'extérieur, sert uniquement à repérer LA
+                # session correspondant à ce jeton (routes/sessions.py::is_current)
+                # sans avoir à redécoder le jeton nous-mêmes plus loin.
+                "jti": jti,
             },
         )
 

@@ -51,6 +51,12 @@ class User(Base):
         "OAuthAccount", back_populates="user", cascade="all, delete-orphan"
     )
 
+    @property
+    def has_password(self) -> bool:
+        """Faux pour un compte créé par OAuth sans mot de passe défini —
+        voir UserResponse (routes/auth.py::me) et password.py (change vs set)."""
+        return self.hashed_password is not None
+
 
 class TenantMember(Base):
     __tablename__ = "xauth_tenant_members"
