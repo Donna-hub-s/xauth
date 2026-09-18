@@ -68,10 +68,6 @@ PERMISSIONS: list[tuple[str, str]] = [
     # Invitations
     ("invite:create", "Créer une invitation"),
     ("invite:revoke", "Révoquer une invitation"),
-    ("invites:read",  "Lister les invitations de son espace (routes API)"),
-    ("invites:write", "Inviter dans son espace (routes API)"),
-    # Donna
-    ("donna:whatsapp", "Utiliser le numéro WhatsApp de l'instance (espace rattaché uniquement)"),
     # Admin global
     ("admin:*", "Accès administrateur complet"),
     # xpulse
@@ -90,27 +86,6 @@ USER_PERMISSIONS: list[str] = [
     "rating:create",
     "user:read",
 ]
-
-# Rôle attribué au créateur d'un espace. Ces permissions ne valent que pour
-# l'espace du jeton (voir scope.py) : jamais d'accès aux autres espaces ni
-# aux opérations de l'instance (utilisateurs, rôles globaux).
-OWNER_PERMISSIONS: list[str] = [
-    "tenants:read",
-    "tenants:write",
-    "rbac:read",
-    "rbac:write",
-    "audit:read",
-    "invites:read",
-    "invites:write",
-    "invite:create",
-    "invite:revoke",
-    "user:read",
-]
-
-# Permissions qu'un responsable d'espace peut accorder à un rôle de SON espace.
-TENANT_ASSIGNABLE_PERMISSIONS: frozenset[str] = frozenset(OWNER_PERMISSIONS) | frozenset(USER_PERMISSIONS) | {
-    "donna:whatsapp"
-}
 
 # ── Fonctions seed ────────────────────────────────────────────────────────────
 
@@ -198,60 +173,6 @@ async def seed_user_role(
     return user_role_loaded
 
 
-async def seed_owner_role(
-    session: AsyncSession,
-    permissions: dict[str, Permission],
-    cfg: dict,
-) -> Role:
-    role_repo = RoleRepository(session)
-    existing_roles = await role_repo.list_for_tenant(None)
-    owner_role = next((r for r in existing_roles if r.name == cfg["OWNER_ROLE_NAME"]), None)
-    if owner_role is None:
-        owner_role = Role(
-            name=cfg["OWNER_ROLE_NAME"],
-            tenant_id=None,
-            description="Responsable d'un espace : administration limitée à son espace",
-        )
-        await role_repo.save(owner_role)
-        logger.info("Rôle owner créé")
-
-    loaded = await role_repo.get_with_permissions(owner_role.id)
-    assert loaded is not None
-    existing = {p.name for p in loaded.permissions}
-    for name in OWNER_PERMISSIONS:
-        perm = permissions.get(name)
-        if perm and perm.name not in existing:
-            loaded.permissions.append(perm)
-    await session.flush()
-    return loaded
-
-
-async def migrate_workspace_admins(
-    session: AsyncSession, platform_tenant: Tenant, admin_role: Role, owner_role: Role
-) -> int:
-    """Avant ce correctif, tout créateur d'espace recevait le rôle admin global
-    (toutes les permissions de l'instance). Hors espace initial, ces membres
-    deviennent responsables de leur espace (rôle owner)."""
-    from sqlalchemy import select
-
-    rows = (
-        await session.execute(
-            select(TenantMember).where(
-                TenantMember.role_id == admin_role.id,
-                TenantMember.tenant_id != platform_tenant.id,
-            )
-        )
-    ).scalars().all()
-    for membership in rows:
-        membership.role_id = owner_role.id
-    if rows:
-        await session.flush()
-        logger.warning(
-            "Sécurité : %d membre(s) d'espace ramené(s) du rôle admin global au rôle owner", len(rows)
-        )
-    return len(rows)
-
-
 async def seed_admin_user(
     session: AsyncSession,
     tenant: Tenant,
@@ -294,7 +215,7 @@ async def get_default_user_role(db: Any, user_role_name: str = "user") -> Role |
         return next((r for r in roles if r.name == user_role_name), None)
 
 
-async def run_seed(db: Any, cfg: dict, scope: Any = None) -> None:
+async def run_seed(db: Any, cfg: dict) -> None:
     """
     Point d'entrée principal — appelé depuis Plugin.on_load.
     cfg est construit par _build_seed_cfg() dans main.py (plugin.yaml > env vars).
@@ -305,15 +226,10 @@ async def run_seed(db: Any, cfg: dict, scope: Any = None) -> None:
             tenant      = await seed_default_tenant(session, cfg)
             admin_role  = await seed_admin_role(session, tenant.id, permissions, cfg)
             await seed_user_role(session, permissions, cfg)
-            owner_role  = await seed_owner_role(session, permissions, cfg)
             await seed_admin_user(session, tenant, admin_role, cfg)
-            await migrate_workspace_admins(session, tenant, admin_role, owner_role)
             await session.commit()
-            if scope is not None:
-                scope.tenant_id = tenant.id
-                scope.admin_role_id = admin_role.id
             logger.info(
-                "Seed xauth terminé — %d permissions, rôles admin, owner et user à jour",
+                "Seed xauth terminé — %d permissions, rôles admin+user créés",
                 len(permissions),
             )
         except Exception:

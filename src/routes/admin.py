@@ -9,7 +9,6 @@ from xcore.sdk import require_permission
 
 from ..repositories.session import SessionRepository
 from ..repositories.user import UserRepository
-from ..scope import PlatformScope, ensure_platform_admin
 from ..services.audit import AuditService
 
 
@@ -27,14 +26,8 @@ class UserPatchRequest(BaseModel):
     is_active: Optional[bool] = None
 
 
-def admin_router(db: Any, scope: PlatformScope, cache: Any = None, token_service: Any = None) -> APIRouter:
-    """Gestion des comptes de TOUTE l'instance : administration de l'instance uniquement."""
-
-    async def platform_admin(user: AuthPayload = Depends(require_permission("admin:*"))) -> AuthPayload:
-        ensure_platform_admin(user, scope)
-        return user
-
-    router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(platform_admin)])
+def admin_router(db: Any, cache: Any = None, token_service: Any = None) -> APIRouter:
+    router = APIRouter(prefix="/admin", tags=["admin"])
 
     @router.get("/users", response_model=List[UserAdminResponse])
     async def list_users(

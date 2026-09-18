@@ -66,11 +66,16 @@ class XAuthBackend:
         roles: list[str] = []
         with contextlib.suppress(Exception):
             async with self._db.session() as session:
+                from .repositories.user import TenantMemberRepository
                 from .services.rbac import RBACService
 
-                # Jeton sans espace : aucune permission. On ne « devine » plus le
-                # premier espace de l'utilisateur — un jeton non scopé (session
-                # provisoire, ou émis avant la MFA) ouvrait sinon un accès complet.
+                # Si le token ne contient pas de tenant_id, on prend le premier membership
+                if not tenant_id:
+                    member_repo = TenantMemberRepository(session)
+                    memberships = await member_repo.get_memberships_for_user(user_id)
+                    if memberships:
+                        tenant_id = memberships[0].tenant_id
+
                 if tenant_id:
                     svc = RBACService(session, cache=self._cache)
                     permissions = await svc.get_permissions_for_user(user_id, tenant_id)

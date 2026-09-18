@@ -60,14 +60,6 @@ class InviteService:
         if expires < now:
             raise ValueError("Invite has expired")
 
-        # L'invitation est nominative : un jeton transmis ou divulgué ne permet
-        # pas à un autre compte de rejoindre l'espace.
-        from ..repositories.user import UserRepository
-
-        user = await UserRepository(self._session).get(user_id)
-        if user is None or user.email.lower() != invite.email.lower():
-            raise ValueError("This invite is addressed to another email address")
-
         # Create membership
         member_repo = TenantMemberRepository(self._session)
         existing = await member_repo.get_membership(user_id, invite.tenant_id)

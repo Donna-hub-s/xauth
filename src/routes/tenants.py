@@ -6,7 +6,6 @@ from xcore.kernel.api import AuthPayload, get_current_user
 from xcore.sdk import require_permission
 
 from ..models.tenant import Tenant
-from ..scope import PlatformScope, ensure_platform_admin, ensure_tenant_access
 from ..repositories.tenant import TenantRepository
 from ..repositories.user import TenantMemberRepository
 from ..schemas.tenant import (
@@ -17,9 +16,7 @@ from ..schemas.tenant import (
 )
 
 
-def tenants_router(db: Any, scope: PlatformScope) -> APIRouter:
-    """Création, liste et suppression d'espaces : administration de l'instance.
-    Lecture, modification et membres : l'espace du jeton uniquement."""
+def tenants_router(db: Any) -> APIRouter:
     router = APIRouter(prefix="/tenants", tags=["tenants"])
 
     @router.post(
@@ -29,11 +26,8 @@ def tenants_router(db: Any, scope: PlatformScope) -> APIRouter:
     )
     async def create_tenant(
         body: TenantCreate,
-        user: AuthPayload = Depends(require_permission("tenants:write")),
+        _: AuthPayload = Depends(require_permission("tenants:write")),
     ) -> Any:
-        # Un utilisateur crée SON espace via /setup/create ; créer un espace
-        # arbitraire est une opération d'instance.
-        ensure_platform_admin(user, scope)
         async with db.session() as session:
             repo = TenantRepository(session)
             existing = await repo.get_by_slug(body.slug)
@@ -50,9 +44,8 @@ def tenants_router(db: Any, scope: PlatformScope) -> APIRouter:
 
     @router.get("/", response_model=List[TenantResponse])
     async def list_tenants(
-        user: AuthPayload = Depends(require_permission("tenants:read")),
+        _: AuthPayload = Depends(require_permission("tenants:read")),
     ) -> Any:
-        ensure_platform_admin(user, scope)
         async with db.session() as session:
             repo = TenantRepository(session)
             return await repo.all()
@@ -60,9 +53,8 @@ def tenants_router(db: Any, scope: PlatformScope) -> APIRouter:
     @router.get("/{tenant_id}", response_model=TenantResponse)
     async def get_tenant(
         tenant_id: str,
-        user: AuthPayload = Depends(get_current_user),
+        _: AuthPayload = Depends(get_current_user),
     ) -> Any:
-        ensure_tenant_access(user, tenant_id, scope)
         async with db.session() as session:
             repo = TenantRepository(session)
             tenant = await repo.get(tenant_id)
@@ -74,9 +66,8 @@ def tenants_router(db: Any, scope: PlatformScope) -> APIRouter:
     async def update_tenant(
         tenant_id: str,
         body: TenantUpdate,
-        user: AuthPayload = Depends(require_permission("tenants:write")),
+        _: AuthPayload = Depends(require_permission("tenants:write")),
     ) -> Any:
-        ensure_tenant_access(user, tenant_id, scope)
         async with db.session() as session:
             repo = TenantRepository(session)
             tenant = await repo.get(tenant_id)
@@ -94,11 +85,8 @@ def tenants_router(db: Any, scope: PlatformScope) -> APIRouter:
     @router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_tenant(
         tenant_id: str,
-        user: AuthPayload = Depends(require_permission("tenants:delete")),
+        _: AuthPayload = Depends(require_permission("tenants:delete")),
     ) -> None:
-        ensure_platform_admin(user, scope)
-        if tenant_id == scope.tenant_id:
-            raise HTTPException(status_code=400, detail="L'espace initial de l'instance ne se supprime pas")
         async with db.session() as session:
             repo = TenantRepository(session)
             tenant = await repo.get(tenant_id)
@@ -110,9 +98,8 @@ def tenants_router(db: Any, scope: PlatformScope) -> APIRouter:
     @router.get("/{tenant_id}/members", response_model=List[MemberResponse])
     async def list_members(
         tenant_id: str,
-        user: AuthPayload = Depends(require_permission("tenants:read")),
+        _: AuthPayload = Depends(require_permission("tenants:read")),
     ) -> Any:
-        ensure_tenant_access(user, tenant_id, scope)
         async with db.session() as session:
             repo = TenantMemberRepository(session)
             return await repo.get_members_of_tenant(tenant_id)

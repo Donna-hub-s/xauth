@@ -35,6 +35,7 @@ from .routes import (
 )
 from .routes.admin import admin_router
 from .routes.sessions import sessions_router
+from .routes.ws_ticket import ws_ticket_router
 from .schemas.auth import (
     LoginRequest,
     LogoutRequest,
@@ -51,7 +52,6 @@ from .services.auth import AuthService
 from .services.email import AuthEmailService
 from .services.events import XAuthEvents
 from .services.token import TokenService
-from .scope import PlatformScope
 from .services.seed import run_seed
 
 class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
@@ -128,11 +128,18 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         except Exception as exc:
             logger.warning("auth : ext.email indisponible (%s) — envoi d'email désactivé.", exc)
             email_ext = None
+
+        try:
+            self._websocket_service = self.get_service("ext.websocket")
+        except Exception as exc:
+            logger.warning(
+                "auth : ext.websocket indisponible (%s) — tickets WS désactivés.", exc
+            )
+            self._websocket_service = None
         self._email_service = AuthEmailService(
             app_name=app_name,
             email_ext=email_ext,
             app_base_url=app_base_url,
-            web_app_url=web_app_url,
         )
 
         register_auth_backend(
@@ -158,20 +165,17 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
 
         seed_cfg = cfg.get("seed", {})
         user_role_name = env.get("USER_ROLE_NAME") or seed_cfg.get("user_role_name", "user")
-        # Rôle du créateur d'un espace : administration limitée à SON espace.
-        # Jamais le rôle admin global (voir scope.py).
-        owner_role_name = env.get("OWNER_ROLE_NAME") or seed_cfg.get("owner_role_name", "owner")
-        self._scope = PlatformScope()
+        admin_role_name = env.get("ADMIN_ROLE_NAME") or seed_cfg.get("admin_role_name", "admin")
 
         # ── Routes ──────────────────────────────────────────────────────────
         self.app.include_router(
-            _auth_router_with_db(db, self._token_service, self._email_service, self._events, cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            _auth_router_with_db(db, self._token_service, self._email_service, self._events, cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
         )
-        self.app.include_router(tenants_router(db, self._scope))
-        self.app.include_router(rbac_router(db, self._scope, cache=cache))
+        self.app.include_router(tenants_router(db))
+        self.app.include_router(rbac_router(db, cache=cache))
         self.app.include_router(mfa_router(db))
-        self.app.include_router(invites_router(db, self._email_service, self._events, self._scope))
-        self.app.include_router(audit_router(db, self._scope))
+        self.app.include_router(invites_router(db, self._email_service, self._events))
+        self.app.include_router(audit_router(db))
         self.app.include_router(
             oauth_router(
                 db,
@@ -185,11 +189,12 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         )
         self.app.include_router(password_router(db, cache, self._email_service, self._events))
         self.app.include_router(sessions_router(db, self._token_service, cache=cache))
-        self.app.include_router(admin_router(db, self._scope, cache=cache, token_service=self._token_service))
+        self.app.include_router(admin_router(db, cache=cache, token_service=self._token_service))
+        self.app.include_router(ws_ticket_router(self._websocket_service))
 
         # ── Seed ────────────────────────────────────────────────────────────
         from .services.seed import run_seed
-        await run_seed(db, cfg=_build_seed_cfg(cfg.get("seed", {}), env), scope=self._scope)
+        await run_seed(db, cfg=_build_seed_cfg(cfg.get("seed", {}), env))
 
     async def on_unload(self) -> None:
         unregister_auth_backend()
@@ -224,7 +229,6 @@ def _build_seed_cfg(seed_yaml: dict, env: dict) -> dict:
             "[xauth] Configuration seed incomplète — champs manquants dans plugin.yaml : "
             + ", ".join(missing)
         )
-    result["OWNER_ROLE_NAME"] = env.get("OWNER_ROLE_NAME") or seed_yaml.get("owner_role_name") or "owner"
     return result
 
 
@@ -235,7 +239,7 @@ def _auth_router_with_db(
     events: XAuthEvents | None = None,
     cache=None,
     user_role_name: str = "user",
-    owner_role_name: str = "owner",
+    admin_role_name: str = "admin",
 ) -> APIRouter:
     router = APIRouter(tags=["auth"])
 
@@ -250,7 +254,7 @@ def _auth_router_with_db(
         )
     async def register(body: RegisterRequest):
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 user = await svc.register(
                     email=body.email,
@@ -264,7 +268,7 @@ def _auth_router_with_db(
                     template="welcome",
                     context={
                         "username": user.email,
-                        "login_url": f"{email_service.auth.web_url}/login",
+                        "login_url": f"{email_service.auth.base_url}/login",
                     },
                 )
                 return user
@@ -275,7 +279,7 @@ def _auth_router_with_db(
     async def login(body: LoginRequest, request: Request):
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 result = await svc.login(
                     email=body.email,
@@ -299,7 +303,7 @@ def _auth_router_with_db(
         """
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 result = await svc.verify_mfa_login(
                     mfa_token=body.mfa_token,
@@ -315,7 +319,7 @@ def _auth_router_with_db(
     async def refresh(body: RefreshRequest, request: Request):
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 result = await svc.refresh(
                     refresh_token=body.refresh_token, ip_address=ip
@@ -328,7 +332,7 @@ def _auth_router_with_db(
     @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
     async def logout(body: LogoutRequest):
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             await svc.logout(body.refresh_token)
             await session.commit()
 
@@ -347,7 +351,7 @@ def _auth_router_with_db(
         """
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 result = await svc.select_tenant(
                     refresh_token=body.refresh_token,
@@ -367,7 +371,7 @@ def _auth_router_with_db(
         """
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 result = await svc.setup_create_tenant(
                     refresh_token=body.refresh_token,
@@ -388,7 +392,7 @@ def _auth_router_with_db(
         """
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 result = await svc.setup_join_tenant(
                     refresh_token=body.refresh_token,
