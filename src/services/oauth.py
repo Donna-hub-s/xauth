@@ -152,107 +152,32 @@ class OAuthService:
         user = await self._find_or_create_user(user_info)
         await self._store_provider_tokens(provider_name, user_info.provider_user_id, token_data)
 
-        refresh_plain = self._token.create_refresh_token()
-        refresh_hashed = self._token.hash_token(refresh_plain)
-        session_repo = SessionRepository(self._session)
+        if not user.is_active:
+            raise ValueError("Compte désactivé.")
 
-        # Vérifier les memberships — même logique que login()
+        # Même parcours que la connexion par mot de passe (AuthService._finalize_login) :
+        # MFA avant tout jeton, puis espace unique, choix ou création d'espace.
+        # Auparavant la connexion OAuth ignorait la MFA et émettait les jetons directement.
         from ..repositories.user import TenantMemberRepository
-        from ..repositories.tenant import TenantRepository
+        from .auth import AuthService
 
-        member_repo = TenantMemberRepository(self._session)
-        memberships = await member_repo.get_memberships_for_user(user.id)
-
-        # tenant_id explicite fourni dans le state (ex: lien d'invite OAuth)
+        # tenant_id imposé dans le state (ex. lien d'invitation) : seulement si
+        # l'utilisateur en est membre. Sinon, jeton scopé sur l'espace d'un tiers.
         forced_tenant_id: Optional[str] = state_data.get("tenant_id")
-        is_new = getattr(user, "_is_new", False)
-
         if forced_tenant_id:
-            tenant_id: Optional[str] = forced_tenant_id
-        elif not memberships:
-            # Aucun tenant — demander au client de créer ou rejoindre
-            xauth_session = Session(
-                user_id=user.id,
-                tenant_id=None,
-                refresh_token=refresh_hashed,
-                ip_address=ip_address,
-                expires_at=datetime.now(tz=timezone.utc)
-                + timedelta(days=self._token._refresh_expire),
-            )
-            await session_repo.save(xauth_session)
-            return {
-                "access_token": "",
-                "refresh_token": refresh_plain,
-                "token_type": "bearer",
-                "user_id": user.id,
-                "tenant_id": None,
-                "needs_tenant_setup": True,
-                "provider": provider_name,
-                "is_new_user": is_new,
-                "post_login_redirect": state_data.get("redirect"),
-            }
-        elif len(memberships) == 1:
-            tenant_id = memberships[0].tenant_id
-        else:
-            # Plusieurs tenants — retourner la liste
-            tenant_repo = TenantRepository(self._session)
-            tenants = []
-            for m in memberships:
-                t = await tenant_repo.get(m.tenant_id)
-                tenants.append({
-                    "id": m.tenant_id,
-                    "name": t.name if t else None,
-                    "slug": t.slug if t else None,
-                    "role_id": m.role_id,
-                    "is_owner": m.is_owner,
-                })
-            xauth_session = Session(
-                user_id=user.id,
-                tenant_id=None,
-                refresh_token=refresh_hashed,
-                ip_address=ip_address,
-                expires_at=datetime.now(tz=timezone.utc)
-                + timedelta(days=self._token._refresh_expire),
-            )
-            await session_repo.save(xauth_session)
-            return {
-                "access_token": "",
-                "refresh_token": refresh_plain,
-                "token_type": "bearer",
-                "user_id": user.id,
-                "tenant_id": None,
-                "tenants": tenants,
-                "provider": provider_name,
-                "is_new_user": is_new,
-                "post_login_redirect": state_data.get("redirect"),
-            }
+            membership = await TenantMemberRepository(self._session).get_membership(user.id, forced_tenant_id)
+            if membership is None:
+                _logger.warning("[oauth] tenant_id imposé ignoré : %s n'est pas membre", user.id)
+                forced_tenant_id = None
 
-        # 1 tenant résolu — émettre l'access token
-        access_jwt, jti = self._token.create_access_token(
-            user_id=user.id, tenant_id=tenant_id
+        auth = AuthService(self._session, self._token, cache=self._cache)
+        result = await auth._finalize_login(user, forced_tenant_id, ip_address)
+        result.update(
+            provider=provider_name,
+            is_new_user=getattr(user, "_is_new", False),
+            post_login_redirect=state_data.get("redirect"),
         )
-        xauth_session = Session(
-            user_id=user.id,
-            tenant_id=tenant_id,
-            refresh_token=refresh_hashed,
-            ip_address=ip_address,
-            expires_at=datetime.now(tz=timezone.utc)
-            + timedelta(days=self._token._refresh_expire),
-            last_jti=jti,
-        )
-        await session_repo.save(xauth_session)
-
-        return {
-            "access_token": access_jwt,
-            "refresh_token": refresh_plain,
-            "token_type": "bearer",
-            "user_id": user.id,
-            "tenant_id": tenant_id,
-            "needs_tenant_setup": False,
-            "provider": provider_name,
-            "is_new_user": is_new,
-            "post_login_redirect": state_data.get("redirect"),
-        }
+        return result
 
     # ── Lier un provider à un user déjà authentifié ──────────────────────────
 

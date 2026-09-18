@@ -23,6 +23,11 @@ from .token import TokenService
 _JTI_BLACKLIST_PREFIX = "xauth:jti_bl:"
 _MFA_LOGIN_TOKEN_PREFIX = "xauth:mfa:login:"
 _MFA_LOGIN_TOKEN_TTL = 300  # 5 min — assez pour taper un code TOTP sans devoir tout ressaisir
+# Session PROVISOIRE (aucun espace choisi) : créée seulement après authentification
+# complète (mot de passe ou OAuth, puis MFA si activée), utilisable uniquement pour
+# choisir, créer ou rejoindre un espace, jamais pour /refresh.
+_PENDING_SESSION_PREFIX = "xauth:pending:"
+_PENDING_SESSION_TTL = 1800  # 30 min
 
 
 def _get_password_context():
@@ -72,14 +77,15 @@ class AuthService:
         events: XAuthEvents | None = None,
         cache: Any = None,
         user_role_name: str = "user",
-        admin_role_name: str = "admin",
+        owner_role_name: str = "owner",
     ) -> None:
         self._session = session
         self._token = token_service
         self._events = events
         self._cache = cache
         self._user_role_name = user_role_name
-        self._admin_role_name = admin_role_name
+        # Rôle attribué au créateur d'un espace (setup_create_tenant).
+        self._owner_role_name = owner_role_name
 
     async def register(
         self,
@@ -131,6 +137,9 @@ class AuthService:
 
         if session is None:
             raise ValueError("Invalid or expired refresh token")
+        if session.tenant_id is None:
+            # Session provisoire : elle sert uniquement à choisir ou créer un espace.
+            raise ValueError("Session provisoire : choisissez ou créez un espace")
 
         now = datetime.now(tz=timezone.utc)
         expires = session.expires_at
@@ -227,93 +236,14 @@ class AuthService:
             raise ValueError("Account is inactive")
 
         # ── Résolution du tenant ──────────────────────────────────────────────────
-        member_repo = TenantMemberRepository(self._session)
-
-        if not tenant_id:
-            memberships = await member_repo.get_memberships_for_user(user.id)
-
-            if not memberships:
-                # Aucun tenant : créer une session sans tenant et demander au client
-                # de créer ou rejoindre un tenant via /auth/setup/*
-                refresh_token_plain = self._token.create_refresh_token()
-                refresh_token_hashed = self._token.hash_token(refresh_token_plain)
-                session_repo = SessionRepository(self._session)
-                pending_session = Session(
-                    user_id=user.id,
-                    tenant_id=None,
-                    refresh_token=refresh_token_hashed,
-                    device_fingerprint=device_fingerprint,
-                    ip_address=ip_address,
-                    expires_at=datetime.now(tz=timezone.utc)
-                    + timedelta(days=self._token._refresh_expire),
-                )
-                await session_repo.save(pending_session)
-                await audit.log_event(
-                    action="login.needs_tenant_setup",
-                    user_id=user.id,
-                    ip_address=ip_address,
-                    metadata={"reason": "no_membership"},
-                )
-                return {
-                    "access_token": "",
-                    "refresh_token": refresh_token_plain,
-                    "token_type": "bearer",
-                    "user_id": user.id,
-                    "tenant_id": None,
-                    "mfa_required": False,
-                    "needs_tenant_setup": True,
-                    "tenants": None,
-                }
-
-            if len(memberships) == 1:
-                # Un seul tenant → on scope directement, flow normal
-                tenant_id = memberships[0].tenant_id
-            else:
-                # Plusieurs tenants → on retourne la liste sans émettre d'access token
-                # On crée quand même la session pour le refresh token
-                refresh_token_plain = self._token.create_refresh_token()
-                refresh_token_hashed = self._token.hash_token(refresh_token_plain)
-                session_repo = SessionRepository(self._session)
-                session = Session(
-                    user_id=user.id,
-                    tenant_id=None,
-                    refresh_token=refresh_token_hashed,
-                    device_fingerprint=device_fingerprint,
-                    ip_address=ip_address,
-                    expires_at=datetime.now(tz=timezone.utc)
-                    + timedelta(days=self._token._refresh_expire),
-                )
-                await session_repo.save(session)
-
-                # Charger les infos tenant pour l'affichage
-                from ..repositories.tenant import TenantRepository
-                tenant_repo = TenantRepository(self._session)
-                tenants = []
-                for m in memberships:
-                    t = await tenant_repo.get(m.tenant_id)
-                    tenants.append({
-                        "id": m.tenant_id,
-                        "name": t.name if t else None,
-                        "slug": t.slug if t else None,
-                        "role_id": m.role_id,
-                        "is_owner": m.is_owner,
-                    })
-
-                return {
-                    "access_token": "",
-                    "refresh_token": refresh_token_plain,
-                    "token_type": "bearer",
-                    "user_id": user.id,
-                    "tenant_id": None,
-                    "mfa_required": user.mfa_enabled,
-                    "tenants": tenants,
-                }
-        else:
-            # tenant_id fourni → vérifier que le user en est bien membre
-            membership = await member_repo.get_membership(user.id, tenant_id)
+        # Tout passe par _finalize_login : MFA AVANT tout jeton, y compris quand
+        # l'espace reste à choisir ou à créer (tenant_id=None). Auparavant, ces
+        # deux cas émettaient un refresh token avant la MFA, utilisable via
+        # /refresh ou /setup/* pour obtenir un accès sans code.
+        if tenant_id:
+            membership = await TenantMemberRepository(self._session).get_membership(user.id, tenant_id)
             if membership is None:
                 raise ValueError("User is not a member of this tenant")
-
         return await self._finalize_login(user, tenant_id, ip_address, device_fingerprint)
 
     async def _issue_tokens(
@@ -370,6 +300,73 @@ class AuthService:
             "tenants": None,
         }
 
+    async def _start_workspace_choice(
+        self,
+        user: User,
+        ip_address: Optional[str] = None,
+        device_fingerprint: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Suite d'une authentification COMPLÈTE sans espace désigné :
+        un seul espace → jetons définitifs ; aucun ou plusieurs → session
+        provisoire (30 min, marquée en cache) pour /select-tenant ou /setup/*.
+        """
+        memberships = await TenantMemberRepository(self._session).get_memberships_for_user(user.id)
+        if len(memberships) == 1:
+            return await self._issue_tokens(user, memberships[0].tenant_id, ip_address, device_fingerprint)
+
+        refresh_token_plain = self._token.create_refresh_token()
+        refresh_token_hashed = self._token.hash_token(refresh_token_plain)
+        await SessionRepository(self._session).save(
+            Session(
+                user_id=user.id,
+                tenant_id=None,
+                refresh_token=refresh_token_hashed,
+                device_fingerprint=device_fingerprint,
+                ip_address=ip_address,
+                expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=_PENDING_SESSION_TTL),
+            )
+        )
+        if self._cache is not None:
+            await self._cache.set(
+                f"{_PENDING_SESSION_PREFIX}{refresh_token_hashed}", user.id, ttl=_PENDING_SESSION_TTL
+            )
+
+        tenants = None
+        if memberships:
+            tenant_repo = TenantRepository(self._session)
+            tenants = []
+            for m in memberships:
+                t = await tenant_repo.get(m.tenant_id)
+                tenants.append({
+                    "id": m.tenant_id,
+                    "name": t.name if t else None,
+                    "slug": t.slug if t else None,
+                    "role_id": m.role_id,
+                    "is_owner": m.is_owner,
+                })
+        await AuditService(self._session).log_event(
+            action="login.tenant_selection" if tenants else "login.needs_tenant_setup",
+            user_id=user.id,
+            ip_address=ip_address,
+        )
+        return {
+            "access_token": "",
+            "refresh_token": refresh_token_plain,
+            "token_type": "bearer",
+            "user_id": user.id,
+            "tenant_id": None,
+            "mfa_required": False,
+            "needs_tenant_setup": not tenants,
+            "tenants": tenants,
+        }
+
+    async def _consume_pending_session(self, session: Session) -> None:
+        if self._cache is not None:
+            await self._cache.delete(f"{_PENDING_SESSION_PREFIX}{session.refresh_token}")
+        # Session désormais rattachée à un espace : durée normale d'un refresh token.
+        session.expires_at = datetime.now(tz=timezone.utc) + timedelta(days=self._token._refresh_expire)
+
     async def _finalize_login(
         self,
         user: User,
@@ -388,6 +385,8 @@ class AuthService:
         n'importe quel appelant direct de l'API pouvait simplement sauter.
         """
         if not user.mfa_enabled:
+            if tenant_id is None:
+                return await self._start_workspace_choice(user, ip_address, device_fingerprint)
             return await self._issue_tokens(user, tenant_id, ip_address, device_fingerprint)
 
         if not self._cache:
@@ -457,9 +456,11 @@ class AuthService:
         if user is None or not user.is_active:
             raise ValueError("Compte introuvable ou désactivé.")
 
+        if not pending.get("tenant_id"):
+            return await self._start_workspace_choice(user, ip_address, pending.get("device_fingerprint"))
         return await self._issue_tokens(
             user,
-            pending.get("tenant_id"),
+            pending["tenant_id"],
             ip_address,
             pending.get("device_fingerprint"),
         )
@@ -473,25 +474,11 @@ class AuthService:
     ) -> dict[str, Any]:
         """
         Émet un access token scopé après sélection du tenant par l'utilisateur.
-        Le refresh token doit être valide et non encore scopé (tenant_id = None).
+        Exige une session PROVISOIRE (voir _start_workspace_choice), créée
+        seulement après authentification complète, MFA comprise.
         """
-        hashed = self._token.hash_token(refresh_token)
-        session_repo = SessionRepository(self._session)
-        session = await session_repo.get_by_refresh_token(hashed)
+        session = await self._resolve_pending_session(refresh_token)
 
-        if session is None:
-            raise ValueError("Invalid or expired refresh token")
-
-        now = datetime.now(tz=timezone.utc)
-        expires = session.expires_at
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
-        if expires < now:
-            session.is_revoked = True
-            await self._session.flush()
-            raise ValueError("Refresh token expired")
-
-        # Vérifier que le user appartient bien au tenant demandé
         member_repo = TenantMemberRepository(self._session)
         membership = await member_repo.get_membership(session.user_id, tenant_id)
         if membership is None:
@@ -499,20 +486,8 @@ class AuthService:
 
         user_repo = UserRepository(self._session)
         user = await user_repo.get(session.user_id)
-        if user is None:
+        if user is None or not user.is_active:
             raise ValueError("User not found")
-
-        if user.mfa_enabled:
-            # Ne scope PAS cette session existante avant vérification MFA —
-            # même raisonnement que dans _finalize_login (login mono-tenant) :
-            # un compte multi-tenant avec MFA activé passait par cette
-            # branche sans jamais croiser le moindre contrôle MFA (select_
-            # tenant ne le vérifiait pas du tout). _finalize_login crée une
-            # nouvelle session dédiée une fois le code TOTP confirmé, celle-ci
-            # (non scopée) reste valable pour retenter un select-tenant.
-            return await self._finalize_login(
-                user, tenant_id, ip_address, session.device_fingerprint
-            )
 
         # Mise à jour de la session avec le tenant choisi
         access_token, jti = self._token.create_access_token(
@@ -520,6 +495,7 @@ class AuthService:
         )
         session.tenant_id = tenant_id
         session.last_jti = jti
+        await self._consume_pending_session(session)
         await self._session.flush()
 
         if self._events:
@@ -543,11 +519,13 @@ class AuthService:
     # ── Tenant setup (après login sans membership) ────────────────────────────
 
     async def _resolve_pending_session(self, refresh_token: str):
-        """Valide un refresh token et retourne la Session. Lève ValueError si invalide."""
+        """Session PROVISOIRE valide : non révoquée, sans espace, non expirée et
+        marquée en cache (créée après authentification complète). Une session
+        provisoire antérieure à ce contrôle (émise avant la MFA) est refusée."""
         hashed = self._token.hash_token(refresh_token)
         session_repo = SessionRepository(self._session)
         session = await session_repo.get_by_refresh_token(hashed)
-        if session is None or session.is_revoked:
+        if session is None or session.is_revoked or session.tenant_id is not None:
             raise ValueError("Invalid or expired refresh token")
         now = datetime.now(tz=timezone.utc)
         expires = session.expires_at
@@ -557,6 +535,8 @@ class AuthService:
             session.is_revoked = True
             await self._session.flush()
             raise ValueError("Refresh token expired")
+        if self._cache is not None and not await self._cache.get(f"{_PENDING_SESSION_PREFIX}{hashed}"):
+            raise ValueError("Session de connexion expirée — reconnectez-vous")
         return session
 
     async def setup_create_tenant(
@@ -567,7 +547,8 @@ class AuthService:
         ip_address: Optional[str] = None,
     ) -> dict[str, Any]:
         """
-        Crée un nouveau tenant et y rattache l'utilisateur comme owner (rôle admin).
+        Crée un nouveau tenant et y rattache l'utilisateur comme responsable
+        (rôle owner, limité à cet espace — jamais le rôle admin global).
         Réservé aux sessions en attente de setup (tenant_id = None, needs_tenant_setup).
         """
         from ..models.tenant import Tenant
@@ -585,11 +566,11 @@ class AuthService:
 
         role_repo = RoleRepository(self._session)
         global_roles = await role_repo.list_for_tenant(None)
-        admin_role = next((r for r in global_roles if r.name == self._admin_role_name), None)
-        if admin_role is None:
+        owner_role = next((r for r in global_roles if r.name == self._owner_role_name), None)
+        if owner_role is None:
             _logger.warning(
-                "[xauth] Rôle admin '%s' introuvable — owner créé sans rôle pour le tenant %s",
-                self._admin_role_name,
+                "[xauth] Rôle '%s' introuvable — responsable créé sans rôle pour le tenant %s",
+                self._owner_role_name,
                 slug,
             )
 
@@ -597,7 +578,7 @@ class AuthService:
         membership = TenantMember(
             user_id=session.user_id,
             tenant_id=tenant.id,
-            role_id=admin_role.id if admin_role else None,
+            role_id=owner_role.id if owner_role else None,
             is_owner=True,
         )
         await member_repo.save(membership)
@@ -607,6 +588,7 @@ class AuthService:
         )
         session.tenant_id = tenant.id
         session.last_jti = jti
+        await self._consume_pending_session(session)
         await self._session.flush()
 
         audit = AuditService(self._session)
@@ -686,6 +668,7 @@ class AuthService:
         )
         session.tenant_id = invite.tenant_id
         session.last_jti = jti
+        await self._consume_pending_session(session)
         await self._session.flush()
 
         audit = AuditService(self._session)
