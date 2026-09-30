@@ -16,8 +16,13 @@ class GoogleProvider(OAuthProvider):
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/calendar",
-        # Lecture seule : recherche et lecture de documents par l'assistante.
+        # Lecture seule sur tout le Drive : recherche et lecture de documents
+        # existants par l'assistante.
         "https://www.googleapis.com/auth/drive.readonly",
+        # Écriture volontairement restreinte aux fichiers créés par DONNA
+        # (propose_drive_upload, confirm_action) — jamais un accès en
+        # écriture au Drive existant de l'utilisateur.
+        "https://www.googleapis.com/auth/drive.file",
     ]
 
     def get_auth_url(self, state: str, extra_params=None) -> str:
