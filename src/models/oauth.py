@@ -32,9 +32,9 @@ class OAuthAccount(Base):
     # Calendar), distincts des jetons de session xauth (identité seule).
     access_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     refresh_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     granted_scopes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     user: Mapped["User"] = relationship("User", back_populates="oauth_accounts")
 

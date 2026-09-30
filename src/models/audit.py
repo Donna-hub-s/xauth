@@ -32,7 +32,7 @@ class AuditLog(Base):
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     meta: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     tenant: Mapped[Optional["Tenant"]] = relationship(
         "Tenant", back_populates="audit_logs"

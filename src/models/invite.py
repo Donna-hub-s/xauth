@@ -32,8 +32,8 @@ class Invite(Base):
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     token: Mapped[str] = mapped_column(String(36), unique=True, nullable=False, default=lambda: str(uuid4()))
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="invites")

@@ -31,7 +31,7 @@ class User(Base):
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mfa_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     mfa_backup_codes: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)  # JSON list of hashed codes
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     __table_args__ = (Index("ix_xauth_user_email", "email"),)
 
@@ -73,7 +73,7 @@ class TenantMember(Base):
     role_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("xauth_roles.id"), nullable=True
     )
-    joined_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     is_owner: Mapped[bool] = mapped_column(Boolean, default=False)
 
     user: Mapped["User"] = relationship("User", back_populates="tenant_memberships")
