@@ -70,7 +70,12 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
             await conn.run_sync(Base.metadata.create_all)
         _logger.info("[xauth] Tables créées / vérifiées")
         _migrations_dir = Path(__file__).parent.parent / "migrations"
-        runner = MigrationRunner(db_url=str(db.engine.url), migrations_dir=_migrations_dir)
+        # str(engine.url) MASQUE le mot de passe ("***", comportement SQLAlchemy
+        # par défaut pour les logs) — invisible sur SQLite (pas de mot de passe
+        # dans l'URL) mais casse l'authentification Postgres en prod
+        # ("password authentication failed", vu en déploiement réel).
+        db_url = db.engine.url.render_as_string(hide_password=False)
+        runner = MigrationRunner(db_url=db_url, migrations_dir=_migrations_dir)
         try:
             await runner.init(autogenerate=False, message="first_initialisation")
             await runner.upgrade()
