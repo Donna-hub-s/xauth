@@ -25,6 +25,10 @@ GET_TENANT_SCHEMA: TypedDict = {# type: ignore
     "tenant_id": (str, ...),
 }
 
+LIST_MEMBERS_SCHEMA: TypedDict = {# type: ignore
+    "tenant_id": (str, ...),
+}
+
 CREATE_INVITE_SCHEMA: TypedDict = {# type: ignore
     "tenant_id": (str, ...),
     "invited_by": (str, ...),
@@ -119,6 +123,30 @@ class IPCCommands(AutoDispatchMixin):
                         "is_active": user.is_active,
                         "mfa_enabled": user.mfa_enabled,
                     }
+                )
+        except Exception as exc:
+            return error(str(exc), code="error")
+
+    @action("xauth.list_members")
+    @validate_payload(LIST_MEMBERS_SCHEMA, type_response="model", unset=False) # type: ignore
+    async def _ipc_list_members(self, payload) -> dict:
+        """Membres d'UN espace (celui que l'appelant désigne — le plugin chat l'impose depuis le jeton de la requête, jamais
+        depuis une entrée de l'utilisateur) : identifiant, email, propriétaire, actif. Aucun secret ; plafonné."""
+        try:
+            async with self._db.session() as session: # type: ignore
+                from .repositories.user import TenantMemberRepository
+
+                members = await TenantMemberRepository(session).get_members_of_tenant(payload.tenant_id)
+                return ok(
+                    members=[
+                        {
+                            "user_id": member.user_id,
+                            "email": member.user.email if member.user else None,
+                            "is_owner": bool(member.is_owner),
+                            "is_active": bool(member.user.is_active) if member.user else False,
+                        }
+                        for member in members[:500]
+                    ]
                 )
         except Exception as exc:
             return error(str(exc), code="error")
