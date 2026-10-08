@@ -21,15 +21,14 @@ class RoleRepository(BaseRepository[Role]):
         return result.scalar_one_or_none()
 
     async def list_for_tenant(self, tenant_id: Optional[str]) -> list[Role]:
+        # `permissions` chargée ICI : la route sérialise la réponse (RoleResponse) après la fermeture de la session,
+        # un chargement paresseux à ce moment-là lève DetachedInstanceError (500) — sur toute base.
+        query = select(Role).options(selectinload(Role.permissions))
         if tenant_id is None:
-            result = await self.session.execute(
-                select(Role).where(Role.tenant_id.is_(None))
-            )
+            result = await self.session.execute(query.where(Role.tenant_id.is_(None)))
         else:
             result = await self.session.execute(
-                select(Role).where(
-                    (Role.tenant_id == tenant_id) | Role.tenant_id.is_(None)
-                )
+                query.where((Role.tenant_id == tenant_id) | Role.tenant_id.is_(None))
             )
         return list(result.scalars().all())
 
