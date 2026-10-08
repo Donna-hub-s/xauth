@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class RoleCreate(BaseModel):
@@ -22,20 +22,18 @@ class AssignRoleRequest(BaseModel):
 
 
 class PermissionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     name: str
     description: Optional[str]
 
-    class Config:
-        from_attributes = True
-
 
 class RoleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     name: str
     tenant_id: Optional[str]
     description: Optional[str]
     permissions: List[PermissionResponse] = []
-
-    class Config:
-        from_attributes = True

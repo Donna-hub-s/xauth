@@ -1,5 +1,5 @@
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr
 
 
 class UserRootSchemas(BaseModel):
@@ -75,6 +75,8 @@ class TokenResponse(BaseModel):
 
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     email: str
     is_active: bool
@@ -82,6 +84,3 @@ class UserResponse(BaseModel):
     # Jamais le hash lui-même — juste de quoi choisir entre "changer" et
     # "définir" un mot de passe côté interface (comptes créés par OAuth).
     has_password: bool
-
-    class Config:
-        from_attributes = True

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class InviteCreate(BaseModel):
@@ -26,6 +26,8 @@ class InvitePreview(BaseModel):
 
 
 class InviteResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     tenant_id: str
     email: str
@@ -35,6 +37,3 @@ class InviteResponse(BaseModel):
     used_at: Optional[datetime]
     is_active: bool
     invited_by: str
-
-    class Config:
-        from_attributes = True
