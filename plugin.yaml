@@ -121,6 +121,58 @@ permissions:
     actions: ["*"]
     effect: allow
 
+# ── RBAC — catalogue des actions IPC (voir profile/plugin.yaml pour la convention du format) ────────────────
+# xauth est la SOURCE des permissions globales (admin:*, tenants:write — voir chat/src/access.py et
+# services/seed.py::OWNER_PERMISSIONS) : contrairement à xpulses, ses actions privilégiées référencent ces
+# grants globaux existants plutôt que d'en déclarer de nouvelles namespacées "xauth:*".
+rbac:
+  grants: []
+  actions:
+    - action: "xauth.verify_token"
+      tier: foundational
+      requires: []
+      description: >
+        Établit l'identité elle-même à partir d'un jeton brut — ne peut pas exiger une permission pour être
+        appelée, ce serait circulaire (il n'y a pas encore de principal avant qu'elle ne s'exécute).
+    - action: "xauth.has_permission"
+      tier: foundational
+      requires: []
+      description: "Répond à « cet utilisateur a-t-il cette permission » pour un appelant quelconque — la gater serait aussi circulaire."
+    - action: "xauth.get_user"
+      tier: users
+      requires: []
+      description: "Résout un user_id DÉJÀ connu de l'appelant (project_routes, reminder_notify_bridge) en infos de base (email, actif, MFA) — pas de secret renvoyé."
+    - action: "xauth.get_oauth_token"
+      tier: users
+      requires: []
+      description: "Jeton OAuth tiers (Gmail/Calendar…) DE l'appelant — scopé par user_id, jamais celui d'un autre."
+    - action: "xauth.log_event"
+      tier: users
+      requires: []
+      description: "Écrit une ligne d'audit — effet de bord disponible à toute action authentifiée normale, pas une opération élevée."
+    - action: "xauth.create_invite"
+      tier: users
+      requires: []
+      description: >
+        Aucun appelant IPC actuel (grep du 2026-10-07 : rien n'appelle call_plugin("auth", "xauth.create_invite",
+        ...) côté chat) — à reclasser dès qu'un vrai appelant existe, probablement tenant_admin si c'est un
+        membre qui invite au nom de son espace.
+    - action: "xauth.get_tenant"
+      tier: admin
+      requires: ["admin:*"]
+      description: >
+        Nom d'un tenant par id — seul appelant : /usage/platform, déjà derrière require_platform_admin côté HTTP.
+        Gatée via @action(permissions=["admin:*"]) (xcoreruntime >= 2.8.1) : défense en profondeur, pas le seul filet.
+    - action: "xauth.list_members"
+      tier: tenant_admin
+      requires: ["tenants:write", "admin:*"]  # l'un OU l'autre (owner du tenant OU admin plateforme)
+      description: >
+        Annuaire d'un espace — seuls appelants : /usage/tenant*, déjà derrière require_tenant_admin côté HTTP.
+        PAS ENCORE gatée côté IPC : un simple `permissions=["tenants:write"]` refuserait à tort un admin
+        plateforme qui n'est pas owner de CE tenant précis — il faut permission_groups (OU de ET), posé dans
+        xcore (uncommitted) mais pas encore publié sur PyPI. TODO déjà dans ipc.py, avec un test qui casse
+        exprès quand permission_groups devient disponible.
+
 # ── Ressources ────────────────────────────────────────────────────────────────
 resources:
   timeout_seconds: 30

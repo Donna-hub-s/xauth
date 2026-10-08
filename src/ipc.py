@@ -127,6 +127,10 @@ class IPCCommands(AutoDispatchMixin):
         except Exception as exc:
             return error(str(exc), code="error")
 
+    # TODO(permission_groups) : seul appelant = usage_routes.py derrière require_tenant_admin (owner du tenant,
+    # `tenants:write`, OU admin plateforme, `admin:*`). Un simple `permissions=["tenants:write"]` refuserait à tort
+    # un admin plateforme qui n'est pas owner de CE tenant (ActionPermissionMiddleware ne fait pas de OU). À poser
+    # dès que xcoreruntime publie permission_groups : permission_groups=[["tenants:write"], ["admin:*"]].
     @action("xauth.list_members")
     @validate_payload(LIST_MEMBERS_SCHEMA, type_response="model", unset=False) # type: ignore
     async def _ipc_list_members(self, payload) -> dict:
@@ -151,9 +155,13 @@ class IPCCommands(AutoDispatchMixin):
         except Exception as exc:
             return error(str(exc), code="error")
 
-    @action("xauth.get_tenant")
+    @action("xauth.get_tenant", permissions=["admin:*"])
     @validate_payload(GET_TENANT_SCHEMA, type_response="model", unset=False) # # type: ignore
     async def _ipc_get_tenant(self, payload) -> dict:
+        # Défense en profondeur : le seul appelant (usage_routes.py, /usage/platform) exige déjà
+        # require_platform_admin (admin:* dans le tenant plateforme) côté HTTP. ActionPermissionMiddleware
+        # (xcoreruntime >= 2.8.1) revérifie admin:* ici — plus grossier que require_platform_admin (pas de
+        # contrôle du tenant du jeton), mais un deuxième filet indépendant plutôt qu'aucun.
         try:
             async with self._db.session() as session: # # type: ignore
                 from .repositories.tenant import TenantRepository
