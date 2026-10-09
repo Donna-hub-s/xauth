@@ -399,6 +399,16 @@ class OAuthService:
         if account is None:
             return
 
+        # Une connexion ne redemande que l'identité (voir GoogleProvider) : ses jetons n'ouvrent PAS Gmail, Agenda ni Drive. Si
+        # elle n'ajoute rien à ce qui est déjà accordé, on garde les jetons et les accès enregistrés. Sans cette règle, chaque
+        # connexion d'un utilisateur qui avait relié Gmail effacerait ses accès (les lignes Gmail/Agenda/Drive repasseraient « non
+        # connectées ») et lui ferait appeler Gmail avec un jeton sans le droit pour un temps. Un jeton qui apporte un accès NOUVEAU
+        # (liaison d'un service) remplace, lui, l'ancien, et `granted_scopes` redit ce que Google a réellement accordé.
+        incoming = set((token_data.get("scope") or "").split())
+        known = set((account.granted_scopes or "").split())
+        if known and incoming and incoming <= known and account.refresh_token_encrypted:
+            return
+
         account.access_token_encrypted = self._cipher.encrypt(access_token)
         if token_data.get("refresh_token"):
             account.refresh_token_encrypted = self._cipher.encrypt(token_data["refresh_token"])
