@@ -139,8 +139,9 @@ def oauth_router(
     async def callback(
         provider: str,
         request: Request,
-        code: str,
-        state: str,
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
     ) -> Any:
         """
         Point d'entrée retour provider — atteint par une navigation top-level
@@ -153,12 +154,19 @@ def oauth_router(
         connexion, ou directement `redirect` (ex. /workspace/settings, voir
         auth.service.ts::startLinkGoogle) pour une liaison de compte —,
         jamais par un retour JSON ou une HTTPException.
+
+        `code`, `state` et `error` sont facultatifs EXPRÈS : quand l'utilisateur annule le consentement chez Google, celui-ci
+        revient avec `?error=access_denied&state=…` et sans code — un paramètre obligatoire aurait affiché une réponse 422
+        brute dans le navigateur au lieu de ce redirect.
         """
         ip = _extract_ip(request)
         async with db.session() as session:
             svc = _svc(session)
             try:
-                result = await svc.handle_callback(provider, code, state, ip_address=ip)
+                if error or not code:
+                    result = await svc.handle_denied(provider, state, error)
+                else:
+                    result = await svc.handle_callback(provider, code, state or "", ip_address=ip)
                 await session.commit()
             except ValueError as exc:
                 # Attendu (state expiré, compte désactivé, …) — pas de traceback,

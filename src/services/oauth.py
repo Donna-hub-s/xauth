@@ -42,6 +42,7 @@ PROVIDER_UNKNOWN = "provider_unknown"
 PROVIDER_ERROR = "provider_error"
 ACCOUNT_DISABLED = "account_disabled"
 ALREADY_LINKED = "already_linked"
+ACCESS_DENIED = "access_denied"  # l'utilisateur a refusé (ou annulé) le consentement chez le provider
 
 
 def error_code(exc: BaseException) -> str:
@@ -128,6 +129,31 @@ class OAuthService:
 
     # ── Step 2 : callback — échange le code, trouve ou crée le user ──────────
 
+    async def _take_state(self, provider_name: str, state: str | None) -> dict[str, Any]:
+        """Vérifie et CONSOMME le state CSRF (usage unique) ; renvoie ce qu'il porte."""
+        state_data = await self._cache.get(f"{_STATE_KEY_PREFIX}{state}") if state else None
+        if state_data is None:
+            raise OAuthError(STATE_INVALID, "State OAuth invalide ou expiré.")
+        await self._cache.delete(f"{_STATE_KEY_PREFIX}{state}")
+        if state_data.get("provider") != provider_name:
+            raise OAuthError(STATE_INVALID, "State OAuth : provider mismatch.")
+        return state_data
+
+    async def handle_denied(self, provider_name: str, state: str | None, reason: str | None = None) -> dict[str, Any]:
+        """Le provider revient SANS code : l'utilisateur a annulé ou refusé le consentement (`?error=access_denied`), ou le
+        provider a échoué. Rien n'est créé ni modifié.
+
+        Liaison depuis un compte connecté : on renvoie `link_error` et la page d'où l'on venait — pas la page de connexion.
+        Connexion : on lève, et la route renvoie sur /auth avec le code."""
+        state_data = await self._take_state(provider_name, state)
+        # « access_denied » est le mot que Google, GitHub, Discord et Microsoft envoient tous quand on refuse ; tout autre retour
+        # sans code (serveur en panne, scope invalide, appel sans paramètre) est une défaillance du provider, pas un refus.
+        code = ACCESS_DENIED if reason == "access_denied" else PROVIDER_ERROR
+        _logger.info("[oauth] %s : retour sans code (%s)", provider_name, reason)
+        if state_data.get("link_for_user_id"):
+            return {"link_error": code, "post_login_redirect": state_data.get("redirect")}
+        raise OAuthError(code, f"Retour du provider sans code : {reason or 'refus'}")
+
     async def handle_callback(
         self,
         provider_name: str,
@@ -135,26 +161,26 @@ class OAuthService:
         state: str,
         ip_address: Optional[str] = None,
     ) -> dict[str, Any]:
-        # Vérifier et consommer le state CSRF
-        state_key = f"{_STATE_KEY_PREFIX}{state}"
-        state_data = await self._cache.get(state_key)
-        if state_data is None:
-            raise OAuthError(STATE_INVALID, "State OAuth invalide ou expiré.")
-        await self._cache.delete(state_key)
-
-        if state_data.get("provider") != provider_name:
-            raise OAuthError(STATE_INVALID, "State OAuth : provider mismatch.")
-
+        state_data = await self._take_state(provider_name, state)
         provider = self.get_provider(provider_name)
 
-        # Échanger le code contre un access token
-        token_data = await provider.exchange_code(code)
-        access_token = token_data.get("access_token")
-        if not access_token:
-            raise OAuthError(PROVIDER_ERROR, f"Le provider n'a pas retourné d'access_token : {token_data}")
-
-        # Récupérer le profil utilisateur
-        user_info = await provider.get_user_info(access_token)
+        # Échanger le code contre un jeton, puis lire le profil. Si le provider ou le réseau échoue, une LIAISON revient sur la
+        # page d'où elle est partie (avec le code d'erreur) : avant, tout échec renvoyait vers /login, même un utilisateur
+        # déjà connecté qui reliait Google depuis ses réglages.
+        try:
+            token_data = await provider.exchange_code(code)
+            access_token = token_data.get("access_token")
+            if not access_token:
+                raise OAuthError(PROVIDER_ERROR, f"Le provider n'a pas retourné d'access_token : {token_data}")
+            user_info = await provider.get_user_info(access_token)
+        except Exception as exc:
+            # Trace complète pour une défaillance imprévue (réseau, réponse illisible) : la route la journalisait avant, avec sa pile.
+            _logger.warning("[oauth] %s : échange avec le provider échoué : %s", provider_name, exc, exc_info=not isinstance(exc, OAuthError))
+            if state_data.get("link_for_user_id"):
+                return {"link_error": error_code(exc), "post_login_redirect": state_data.get("redirect")}
+            if isinstance(exc, OAuthError):
+                raise
+            raise OAuthError(PROVIDER_ERROR, "Échange avec le provider échoué.") from exc
 
         link_for_user_id: Optional[str] = state_data.get("link_for_user_id")
         if link_for_user_id:
