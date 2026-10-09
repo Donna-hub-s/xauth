@@ -60,6 +60,12 @@ GET /xauth/oauth/google/authorize
 
 ---
 
+**Consentement Google.** Une connexion n'envoie pas `prompt=consent` : Google ne montre l'écran de consentement (avertissement « application non vérifiée », liste des accès) qu'à la première autorisation ou quand un scope a été ajouté depuis, puis redirige seul. Le `refresh_token` n'est renvoyé qu'à ce premier consentement ; les connexions suivantes conservent celui déjà stocké. Seule la liaison depuis un compte connecté (`link=1`, bouton « reconnecter Google ») redemande le consentement, pour garantir un `refresh_token` neuf.
+
+**Retour au navigateur.** Quand le flux échoue, le callback ne met dans l'adresse de retour qu'un **code** d'une liste fermée (`services/oauth.py`), jamais le texte de l'exception : `state_invalid` (demande expirée), `account_disabled`, `provider_error`, `provider_unknown`, et pour une liaison `already_linked`. Une connexion revient sur `/auth?error=<code>`, une liaison sur la page demandée avec `?linked=<provider>` ou `?link_error=<code>`. Le frontend traduit ces codes (`frontend/lib/oauth-feedback.ts`) ; le détail reste dans les logs du backend.
+
+---
+
 ### GET `/{provider}/callback`
 
 Callback appelé par le provider après autorisation. Crée ou connecte l'utilisateur, retourne les tokens.

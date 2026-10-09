@@ -25,8 +25,28 @@ class GoogleProvider(OAuthProvider):
         "https://www.googleapis.com/auth/drive.file",
     ]
 
-    def get_auth_url(self, state: str, extra_params=None) -> str:
-        return super().get_auth_url(state, {"access_type": "offline", "prompt": "consent"})
+    def get_auth_url(self, state: str, extra_params=None, *, reconsent: bool = False) -> str:
+        """Connexion : aucun `prompt`. Google ne montre alors l'écran de
+        consentement (avertissement « application non vérifiée », liste des
+        accès, cases à valider) qu'à la PREMIÈRE autorisation, ou quand un
+        scope ajouté depuis n'a jamais été accordé ; ensuite il redirige tout
+        seul, au pire avec le sélecteur de compte. `prompt=consent` forcé à
+        chaque connexion infligeait tout ce parcours à chaque reconnexion.
+
+        `access_type=offline` suffit à obtenir le refresh_token au premier
+        consentement ; aux connexions suivantes Google n'en renvoie pas de
+        nouveau, et `_store_provider_tokens` garde alors celui déjà stocké
+        (il ne remplace que s'il en reçoit un).
+
+        Liaison explicite (`reconsent`) : `prompt=consent` est conservé — c'est
+        le geste « reconnecter Google » qui doit garantir un refresh_token
+        tout neuf (jeton perdu, accès révoqué puis réaccordé)."""
+        params = {"access_type": "offline"}
+        if reconsent:
+            params["prompt"] = "consent"
+        if extra_params:
+            params.update(extra_params)
+        return super().get_auth_url(state, params)
 
     async def get_user_info(self, access_token: str) -> OAuthUserInfo:
         async with httpx.AsyncClient() as client:

@@ -24,6 +24,31 @@ _STATE_TTL = 600
 _STATE_KEY_PREFIX = "xauth:oauth:state:"
 
 
+class OAuthError(ValueError):
+    """ValueError qui porte en plus un `code` stable. Le message reste destiné
+    aux logs et à la réponse JSON des routes API ; c'est le code (et lui seul)
+    que le callback met dans l'URL de retour vers le navigateur — le frontend
+    le traduit (voir frontend/lib/oauth-feedback.ts). Avant, c'était le texte
+    de l'exception, parfois suivi de la réponse brute du provider."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+# Codes renvoyés au navigateur — une liste fermée, que le frontend connaît.
+STATE_INVALID = "state_invalid"
+PROVIDER_UNKNOWN = "provider_unknown"
+PROVIDER_ERROR = "provider_error"
+ACCOUNT_DISABLED = "account_disabled"
+ALREADY_LINKED = "already_linked"
+
+
+def error_code(exc: BaseException) -> str:
+    """Code à exposer au navigateur pour une erreur du flux OAuth."""
+    return exc.code if isinstance(exc, OAuthError) else PROVIDER_ERROR
+
+
 class OAuthService:
     """
     Gère le flow OAuth2 complet : génération d'URL, callback, find-or-create user.
@@ -50,7 +75,7 @@ class OAuthService:
         provider = self._providers.get(name)
         if provider is None:
             available = ", ".join(self._providers.keys()) or "aucun"
-            raise ValueError(f"Provider '{name}' inconnu. Disponibles : {available}")
+            raise OAuthError(PROVIDER_UNKNOWN, f"Provider '{name}' inconnu. Disponibles : {available}")
         return provider
 
     def list_providers(self) -> list[str]:
@@ -97,7 +122,9 @@ class OAuthService:
             state_data,
             ttl=_STATE_TTL,
         )
-        return provider.get_auth_url(state)
+        # Liaison depuis un compte connecté = geste explicite « reconnecter » :
+        # on redemande le consentement. Une simple connexion ne le redemande pas.
+        return provider.get_auth_url(state, reconsent=link_for_user_id is not None)
 
     # ── Step 2 : callback — échange le code, trouve ou crée le user ──────────
 
@@ -112,11 +139,11 @@ class OAuthService:
         state_key = f"{_STATE_KEY_PREFIX}{state}"
         state_data = await self._cache.get(state_key)
         if state_data is None:
-            raise ValueError("State OAuth invalide ou expiré.")
+            raise OAuthError(STATE_INVALID, "State OAuth invalide ou expiré.")
         await self._cache.delete(state_key)
 
         if state_data.get("provider") != provider_name:
-            raise ValueError("State OAuth : provider mismatch.")
+            raise OAuthError(STATE_INVALID, "State OAuth : provider mismatch.")
 
         provider = self.get_provider(provider_name)
 
@@ -124,7 +151,7 @@ class OAuthService:
         token_data = await provider.exchange_code(code)
         access_token = token_data.get("access_token")
         if not access_token:
-            raise ValueError(f"Le provider n'a pas retourné d'access_token : {token_data}")
+            raise OAuthError(PROVIDER_ERROR, f"Le provider n'a pas retourné d'access_token : {token_data}")
 
         # Récupérer le profil utilisateur
         user_info = await provider.get_user_info(access_token)
@@ -140,7 +167,7 @@ class OAuthService:
                 await self._link_account(link_for_user_id, provider_name, token_data, user_info)
             except ValueError as exc:
                 return {
-                    "link_error": str(exc),
+                    "link_error": error_code(exc),
                     "post_login_redirect": state_data.get("redirect"),
                 }
             return {
@@ -153,7 +180,7 @@ class OAuthService:
         await self._store_provider_tokens(provider_name, user_info.provider_user_id, token_data)
 
         if not user.is_active:
-            raise ValueError("Compte désactivé.")
+            raise OAuthError(ACCOUNT_DISABLED, "Compte désactivé.")
 
         # Même parcours que la connexion par mot de passe (AuthService._finalize_login) :
         # MFA avant tout jeton, puis espace unique, choix ou création d'espace.
@@ -192,7 +219,7 @@ class OAuthService:
         state_key = f"{_STATE_KEY_PREFIX}{state}"
         raw = await self._cache.get(state_key)
         if raw is None:
-            raise ValueError("State OAuth invalide ou expiré.")
+            raise OAuthError(STATE_INVALID, "State OAuth invalide ou expiré.")
         await self._cache.delete(state_key)
 
         provider = self.get_provider(provider_name)
@@ -219,8 +246,9 @@ class OAuthService:
         # Vérifier que ce compte provider n'est pas déjà lié à un autre user
         existing = await oauth_repo.get_by_provider(provider_name, user_info.provider_user_id)
         if existing and existing.user_id != user_id:
-            raise ValueError(
-                f"Ce compte {provider_name} est déjà lié à un autre utilisateur."
+            raise OAuthError(
+                ALREADY_LINKED,
+                f"Ce compte {provider_name} est déjà lié à un autre utilisateur.",
             )
 
         if existing:

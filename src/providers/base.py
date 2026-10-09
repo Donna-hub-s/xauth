@@ -36,7 +36,17 @@ class OAuthProvider:
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
 
-    def get_auth_url(self, state: str, extra_params: dict[str, str] | None = None) -> str:
+    def get_auth_url(
+        self,
+        state: str,
+        extra_params: dict[str, str] | None = None,
+        *,
+        reconsent: bool = False,
+    ) -> str:
+        """`reconsent` : l'utilisateur relie explicitement son compte (Réglages,
+        sélecteur Drive) et veut accorder les accès à nouveau. Sans effet par
+        défaut ; un provider qui sait redemander le consentement le surcharge
+        (voir GoogleProvider)."""
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
