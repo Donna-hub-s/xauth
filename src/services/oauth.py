@@ -90,6 +90,7 @@ class OAuthService:
         tenant_id: Optional[str] = None,
         post_login_redirect: Optional[str] = None,
         link_for_user_id: Optional[str] = None,
+        services: Optional[list[str]] = None,
     ) -> str:
         provider = self.get_provider(provider_name)
 
@@ -125,7 +126,11 @@ class OAuthService:
         )
         # Liaison depuis un compte connecté = geste explicite « reconnecter » :
         # on redemande le consentement. Une simple connexion ne le redemande pas.
-        return provider.get_auth_url(state, reconsent=link_for_user_id is not None)
+        # `services` ne vaut QUE pour une liaison : une connexion demande toujours tout, jamais un sous-ensemble choisi par
+        # un appelant anonyme.
+        return provider.get_auth_url(
+            state, reconsent=link_for_user_id is not None, services=services if link_for_user_id else None
+        )
 
     # ── Step 2 : callback — échange le code, trouve ou crée le user ──────────
 

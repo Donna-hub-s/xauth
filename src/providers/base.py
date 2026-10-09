@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from urllib.parse import urlencode
 
 
@@ -42,11 +42,16 @@ class OAuthProvider:
         extra_params: dict[str, str] | None = None,
         *,
         reconsent: bool = False,
+        services: Sequence[str] | None = None,
     ) -> str:
         """`reconsent` : l'utilisateur relie explicitement son compte (Réglages,
         sélecteur Drive) et veut accorder les accès à nouveau. Sans effet par
         défaut ; un provider qui sait redemander le consentement le surcharge
-        (voir GoogleProvider)."""
+        (voir GoogleProvider).
+
+        `services` : ne demander que l'accès à ces services (liaison depuis un
+        compte connecté). Ignoré par défaut : un provider qui découpe ses accès
+        par service (Google) le surcharge."""
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,

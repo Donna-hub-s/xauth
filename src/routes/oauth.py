@@ -100,6 +100,7 @@ def oauth_router(
         tenant_id: str | None = None,
         redirect: str | None = None,
         direct: bool = False,
+        services: str | None = None,
         current_user: AuthPayload | None = Depends(_optional_user),
     ) -> Any:
         """
@@ -113,6 +114,9 @@ def oauth_router(
         c'est ce que fait le bouton de connexion initial (jamais de liaison
         ici, même authentifié : un clic sur "Se connecter avec Google" ne
         doit pas silencieusement lier le compte de la session en cours).
+
+        `services` (liste séparée par des virgules, ex. `gmail,drive`) : ne demander que les accès de ces services. Pris en compte
+        pour une LIAISON seulement (appelant authentifié, sans `direct`) ; un service inconnu répond 400.
         """
         # `redirect` est validé ici (pas seulement au callback) : c'est la
         # valeur persistée dans le state Redis et relue telle quelle par
@@ -128,6 +132,7 @@ def oauth_router(
                     tenant_id=tenant_id,
                     post_login_redirect=safe_redirect,
                     link_for_user_id=link_for_user_id,
+                    services=[name.strip() for name in services.split(",") if name.strip()] if services else None,
                 )
                 if direct:
                     return RedirectResponse(url, status_code=status.HTTP_302_FOUND)

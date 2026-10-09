@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+from typing import Sequence
+
 import httpx
 
 from .base import OAuthProvider, OAuthUserInfo
 
 
-class GoogleProvider(OAuthProvider):
-    name = "google"
-    auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
-    token_url = "https://oauth2.googleapis.com/token"
-    scopes = [
-        "openid",
-        "email",
-        "profile",
+IDENTITY_SCOPES = ["openid", "email", "profile"]
+
+# Les accès à l'API Google, par service : ce que montrent les lignes Gmail, Agenda et Drive des connecteurs
+# (voir app/chat routes/connectors_routes.py::GOOGLE_SCOPES, qui lit ces mêmes accès dans l'autre sens).
+SERVICE_SCOPES: dict[str, list[str]] = {
+    "gmail": [
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
-        "https://www.googleapis.com/auth/calendar",
+    ],
+    "calendar": ["https://www.googleapis.com/auth/calendar"],
+    "drive": [
         # Lecture seule sur tout le Drive : recherche et lecture de documents
         # existants par l'assistante.
         "https://www.googleapis.com/auth/drive.readonly",
@@ -23,9 +25,20 @@ class GoogleProvider(OAuthProvider):
         # (propose_drive_upload, confirm_action) — jamais un accès en
         # écriture au Drive existant de l'utilisateur.
         "https://www.googleapis.com/auth/drive.file",
-    ]
+    ],
+}
 
-    def get_auth_url(self, state: str, extra_params=None, *, reconsent: bool = False) -> str:
+
+class GoogleProvider(OAuthProvider):
+    name = "google"
+    auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
+    token_url = "https://oauth2.googleapis.com/token"
+    # La connexion demande TOUT, d'un coup (même liste et même ordre qu'avant la découpe par service).
+    scopes = IDENTITY_SCOPES + [scope for service in SERVICE_SCOPES.values() for scope in service]
+
+    def get_auth_url(
+        self, state: str, extra_params=None, *, reconsent: bool = False, services: Sequence[str] | None = None
+    ) -> str:
         """Connexion : aucun `prompt`. Google ne montre alors l'écran de
         consentement (avertissement « application non vérifiée », liste des
         accès, cases à valider) qu'à la PREMIÈRE autorisation, ou quand un
@@ -40,10 +53,22 @@ class GoogleProvider(OAuthProvider):
 
         Liaison explicite (`reconsent`) : `prompt=consent` est conservé — c'est
         le geste « reconnecter Google » qui doit garantir un refresh_token
-        tout neuf (jeton perdu, accès révoqué puis réaccordé)."""
+        tout neuf (jeton perdu, accès révoqué puis réaccordé).
+
+        `services` (liaison depuis un compte connecté) : on ne demande que l'identité et les accès de ces services — c'est ce
+        qui permet de relier Gmail sans réclamer Agenda ni Drive. `include_granted_scopes` garde ce qui a déjà été accordé :
+        Google renvoie l'UNION, donc relier Drive après Gmail ne retire pas Gmail, et les accès enregistrés restent exacts.
+        Un service inconnu est refusé (ValueError), jamais ignoré : sans cela une faute de frappe demanderait trop peu en silence."""
         params = {"access_type": "offline"}
         if reconsent:
             params["prompt"] = "consent"
+        if services:
+            unknown = sorted(set(services) - SERVICE_SCOPES.keys())
+            if unknown:
+                raise ValueError(f"Service Google inconnu : {', '.join(unknown)}. Disponibles : {', '.join(SERVICE_SCOPES)}.")
+            wanted = IDENTITY_SCOPES + [scope for name, scopes in SERVICE_SCOPES.items() if name in services for scope in scopes]
+            params["scope"] = " ".join(wanted)
+            params["include_granted_scopes"] = "true"
         if extra_params:
             params.update(extra_params)
         return super().get_auth_url(state, params)
