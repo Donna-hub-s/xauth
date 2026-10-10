@@ -203,7 +203,6 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         self.app.include_router(ws_ticket_router(self._websocket_service))
 
         # ── Seed ────────────────────────────────────────────────────────────
-        from .services.seed import run_seed
         await run_seed(db, cfg=_build_seed_cfg(cfg.get("seed", {}), env), scope=self._scope)
 
     async def on_unload(self) -> None:
