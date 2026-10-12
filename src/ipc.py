@@ -127,11 +127,13 @@ class IPCCommands(AutoDispatchMixin):
         except Exception as exc:
             return error(str(exc), code="error")
 
-    # TODO(permission_groups) : seul appelant = usage_routes.py derrière require_tenant_admin (owner du tenant,
-    # `tenants:write`, OU admin plateforme, `admin:*`). Un simple `permissions=["tenants:write"]` refuserait à tort
-    # un admin plateforme qui n'est pas owner de CE tenant (ActionPermissionMiddleware ne fait pas de OU). À poser
-    # dès que xcoreruntime publie permission_groups : permission_groups=[["tenants:write"], ["admin:*"]].
-    @action("xauth.list_members")
+    # Défense en profondeur : le seul appelant (usage_routes.py, /usage/tenant*) exige déjà require_tenant_admin
+    # (owner du tenant, `tenants:write`, OU admin plateforme, `admin:*`) côté HTTP, avec le bon contrôle de portée
+    # (le tenant visé doit être celui du jeton). ActionPermissionMiddleware revérifie ici en OU — plus grossier
+    # (pas de contrôle du tenant du jeton, comme pour xauth.get_tenant ci-dessous) mais un deuxième filet
+    # indépendant plutôt qu'aucun. `permission_groups` (OU de ET) évite de refuser à tort un admin plateforme qui
+    # n'est pas owner de CE tenant précis — un simple `permissions=["tenants:write"]` l'aurait fait.
+    @action("xauth.list_members", permission_groups=[["tenants:write"], ["admin:*"]])
     @validate_payload(LIST_MEMBERS_SCHEMA, type_response="model", unset=False) # type: ignore
     async def _ipc_list_members(self, payload) -> dict:
         """Membres d'UN espace (celui que l'appelant désigne — le plugin chat l'impose depuis le jeton de la requête, jamais
