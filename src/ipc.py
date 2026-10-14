@@ -29,6 +29,12 @@ LIST_MEMBERS_SCHEMA: TypedDict = {# type: ignore
     "tenant_id": (str, ...),
 }
 
+IS_MEMBER_SCHEMA: TypedDict = {# type: ignore
+    "tenant_id": (str, ...),
+    "user_id": (str, None),
+    "email": (str, None),
+}
+
 CREATE_INVITE_SCHEMA: TypedDict = {# type: ignore
     "tenant_id": (str, ...),
     "invited_by": (str, ...),
@@ -154,6 +160,35 @@ class IPCCommands(AutoDispatchMixin):
                         for member in members[:500]
                     ]
                 )
+        except Exception as exc:
+            return error(str(exc), code="error")
+
+    @action("xauth.is_member")
+    @validate_payload(IS_MEMBER_SCHEMA, type_response="model", unset=False) # type: ignore
+    async def _ipc_is_member(self, payload) -> dict:
+        """UN booléen : ce compte (par `user_id`) ou cette adresse (par `email`) est-il membre de CET espace ? Rien d'autre n'est renvoyé — ni
+        identifiant, ni rôle, ni liste. Sert à inviter dans un projet seulement quelqu'un de l'espace, et à nettoyer les appartenances de
+        projet d'un compte qui a quitté l'espace. Volontairement SANS exigence de permission : un propriétaire de projet (pas
+        forcément responsable de l'espace) doit pouvoir poser la question ; le tenant est imposé par l'appelant (le plugin chat le lit
+        dans le jeton), jamais choisi par un utilisateur."""
+        try:
+            from sqlalchemy import func, select
+
+            from .models.user import TenantMember, User
+
+            user_id = getattr(payload, "user_id", None)
+            email = (getattr(payload, "email", None) or "").strip().lower()
+            if not user_id and not email:
+                return error("user_id ou email requis", code="invalid")
+            async with self._db.session() as session: # type: ignore
+                query = (
+                    select(User.is_active)
+                    .join(TenantMember, TenantMember.user_id == User.id)
+                    .where(TenantMember.tenant_id == payload.tenant_id)
+                )
+                query = query.where(User.id == user_id) if user_id else query.where(func.lower(User.email) == email)
+                row = (await session.execute(query)).first()
+            return ok(member=row is not None, active=bool(row[0]) if row is not None else False)
         except Exception as exc:
             return error(str(exc), code="error")
 

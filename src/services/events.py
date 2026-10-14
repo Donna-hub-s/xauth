@@ -27,6 +27,10 @@ OAUTH_UNLINKED = "xauth.oauth.unlinked"
 # Invitations
 INVITE_CREATED  = "xauth.invite.created"
 INVITE_ACCEPTED = "xauth.invite.accepted"
+INVITE_REVOKED  = "xauth.invite.revoked"
+
+# Appartenance à un espace — le plugin chat s'y abonne pour retirer les appartenances de projet d'un membre exclu.
+MEMBER_REMOVED = "xauth.tenant.member_removed"
 
 # MFA
 MFA_ENABLED  = "xauth.mfa.enabled"
@@ -108,6 +112,14 @@ class XAuthEvents:
 
     async def invite_accepted(self, invite_id: str, user_id: str, tenant_id: str) -> None:
         await self.emit(INVITE_ACCEPTED, {"invite_id": invite_id, "user_id": user_id, "tenant_id": tenant_id})
+
+    async def invite_revoked(self, invite_id: str, tenant_id: str, revoked_by: str) -> None:
+        await self.emit(INVITE_REVOKED, {"invite_id": invite_id, "tenant_id": tenant_id, "revoked_by": revoked_by})
+
+    # ── Appartenance ──────────────────────────────────────────────────────────
+
+    async def member_removed(self, user_id: str, tenant_id: str, removed_by: str) -> None:
+        await self.emit(MEMBER_REMOVED, {"user_id": user_id, "tenant_id": tenant_id, "removed_by": removed_by})
 
     # ── MFA ───────────────────────────────────────────────────────────────────
 
