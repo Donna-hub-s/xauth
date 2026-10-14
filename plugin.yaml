@@ -142,6 +142,13 @@ rbac:
       tier: users
       requires: []
       description: "Résout un user_id DÉJÀ connu de l'appelant (project_routes, reminder_notify_bridge) en infos de base (email, actif, MFA) — pas de secret renvoyé."
+    - action: "xauth.is_member"
+      tier: users
+      requires: []
+      description: >
+        UN booléen (`member`, `active`) : ce compte ou cette adresse est-il membre de l'espace que l'appelant désigne ? Le plugin chat
+        l'impose depuis le jeton. Ne renvoie ni identifiant, ni rôle, ni liste. Sert à n'inviter dans un projet que des membres de
+        l'espace et à retirer les appartenances de projet d'un compte qui a quitté l'espace.
     - action: "xauth.get_oauth_token"
       tier: users
       requires: []

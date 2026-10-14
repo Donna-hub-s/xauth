@@ -181,7 +181,7 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         self.app.include_router(
             _auth_router_with_db(db, self._token_service, self._email_service, self._events, cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
         )
-        self.app.include_router(tenants_router(db, self._scope))
+        self.app.include_router(tenants_router(db, self._scope, self._events))
         self.app.include_router(rbac_router(db, self._scope, cache=cache))
         self.app.include_router(mfa_router(db))
         self.app.include_router(invites_router(db, self._email_service, self._events, self._scope))

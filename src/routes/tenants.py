@@ -5,10 +5,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from xcore.kernel.api import AuthPayload, get_current_user
 from xcore.sdk import require_permission
 
+from sqlalchemy import func, select, update
+
+from ..models.session import Session as AuthSession
 from ..models.tenant import Tenant
+from ..models.user import TenantMember
 from ..scope import PlatformScope, ensure_platform_admin, ensure_tenant_access
 from ..repositories.tenant import TenantRepository
 from ..repositories.user import TenantMemberRepository
+from ..services.audit import AuditService
+from ..services.events import XAuthEvents
 from ..schemas.tenant import (
     MemberResponse,
     TenantCreate,
@@ -17,7 +23,7 @@ from ..schemas.tenant import (
 )
 
 
-def tenants_router(db: Any, scope: PlatformScope) -> APIRouter:
+def tenants_router(db: Any, scope: PlatformScope, events: XAuthEvents | None = None) -> APIRouter:
     """Création, liste et suppression d'espaces : administration de l'instance.
     Lecture, modification et membres : l'espace du jeton uniquement."""
     router = APIRouter(prefix="/tenants", tags=["tenants"])
@@ -116,5 +122,41 @@ def tenants_router(db: Any, scope: PlatformScope) -> APIRouter:
         async with db.session() as session:
             repo = TenantMemberRepository(session)
             return await repo.get_members_of_tenant(tenant_id)
+
+    @router.delete("/{tenant_id}/members/{member_user_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def remove_member(
+        tenant_id: str,
+        member_user_id: str,
+        user: AuthPayload = Depends(require_permission("tenants:write")),
+    ) -> None:
+        """Retire un compte de l'espace (responsable de l'espace du jeton). Ses sessions DANS cet espace sont révoquées — il ne peut plus
+        agir avec un jeton encore valide — et un événement part : le plugin chat en retire ses appartenances de projet. Le dernier
+        responsable d'un espace ne se retire pas (l'espace n'aurait plus personne pour le gérer). Audité."""
+        ensure_tenant_access(user, tenant_id, scope)
+        async with db.session() as session:
+            repo = TenantMemberRepository(session)
+            membership = await repo.get_membership(member_user_id, tenant_id)
+            if membership is None:
+                raise HTTPException(status_code=404, detail="Member not found")
+            if membership.is_owner:
+                owners = (
+                    await session.execute(
+                        select(func.count()).select_from(TenantMember).where(TenantMember.tenant_id == tenant_id, TenantMember.is_owner.is_(True))
+                    )
+                ).scalar_one()
+                if owners <= 1:
+                    raise HTTPException(status_code=400, detail="Impossible de retirer le dernier responsable de l'espace")
+            await session.execute(
+                update(AuthSession)
+                .where(AuthSession.user_id == member_user_id, AuthSession.tenant_id == tenant_id, AuthSession.is_revoked.is_(False))
+                .values(is_revoked=True)
+            )
+            await repo.delete(membership)
+            await AuditService(session).log_event(
+                action="tenant.member_removed", tenant_id=tenant_id, user_id=user["sub"], resource="tenant_member", resource_id=member_user_id,
+            )
+            await session.commit()
+        if events is not None:
+            await events.member_removed(user_id=member_user_id, tenant_id=tenant_id, removed_by=user["sub"])
 
     return router
