@@ -15,11 +15,14 @@ def ws_ticket_router(websocket_service: Any) -> APIRouter:
 
     @router.post("/ticket", summary="Émettre un ticket de connexion WebSocket")
     async def issue_ws_ticket(current_user: AuthPayload = Depends(get_current_user)) -> dict:
+        tenant_id = (current_user.get("user") or {}).get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(403, "Aucun espace de travail sélectionné.")
         if websocket_service is None:
             raise HTTPException(503, "Notifications temps réel indisponibles")
         ticket = websocket_service.issue_ticket(
             user_id=current_user["sub"],
-            tenant_id=(current_user.get("user") or {}).get("tenant_id"),
+            tenant_id=tenant_id,
             permissions=current_user.get("permissions"),
             roles=current_user.get("roles"),
             channel="user",
