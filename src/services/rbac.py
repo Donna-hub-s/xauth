@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from ..models.user import TenantMember
 from ..repositories.rbac import RoleRepository, PermissionRepository
 from ..repositories.user import TenantMemberRepository
 
+logger = logging.getLogger("xauth.rbac")
 
 _PERM_CACHE_TTL = 300
 _CACHE_KEY_TPL = "xauth:perms:{user_id}:{tenant_id}"
@@ -115,8 +117,9 @@ class RBACService:
                 cached = await self._cache.get(cache_key)
                 if cached:
                     return json.loads(cached)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Cache indisponible : on retombe sur la base (jamais une panne).
+                logger.debug("lecture du cache de permissions ignorée : %s", exc)
 
         # Load from DB
         member_repo = TenantMemberRepository(self._session)
@@ -135,8 +138,9 @@ class RBACService:
         if self._cache:
             try:
                 await self._cache.set(cache_key, json.dumps(permissions), ex=_PERM_CACHE_TTL)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Le résultat reste correct sans cache : on le signale sans échouer.
+                logger.debug("écriture du cache de permissions ignorée : %s", exc)
 
         return permissions
 
@@ -164,5 +168,6 @@ class RBACService:
             cache_key = _CACHE_KEY_TPL.format(user_id=user_id, tenant_id=tenant_id)
             try:
                 await self._cache.delete(cache_key)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Invalidation best-effort : une entrée périmée expire d'elle-même (TTL).
+                logger.debug("invalidation du cache de permissions ignorée : %s", exc)

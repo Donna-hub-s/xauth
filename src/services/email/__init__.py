@@ -7,6 +7,10 @@ from .senders.auth import AuthEmailSender
 from .senders.invite import InviteEmailSender
 from .senders.password import PasswordEmailSender
 
+# `EmailTransport` est ré-exporté pour les intégrateurs (facade email de xauth),
+# pas utilisé dans ce fichier : `__all__` l'explicite pour ruff (F401).
+__all__ = ["AuthEmailService", "EmailTransport"]
+
 
 class AuthEmailService:
     """

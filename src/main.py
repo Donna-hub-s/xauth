@@ -23,7 +23,6 @@ from .providers import (
     MicrosoftProvider,
 )
 from .providers.base import OAuthProvider
-from .middleware import RateLimitMiddleware
 from .routes import (
     audit_router,
     invites_router,
