@@ -9,7 +9,6 @@ from typing import Any, Optional
 _logger = logging.getLogger(__name__)
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from xcore.kernel.api import AuthBackend
 
 from ..models.session import Session
 from ..models.user import TenantMember, User

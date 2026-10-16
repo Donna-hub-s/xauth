@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 
 from ..schemas.auth import (
     LoginRequest,
@@ -77,7 +77,6 @@ def auth_router(auth_service: AuthService, token_service: TokenService) -> APIRo
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc))
 
-        from ..repositories.user import UserRepository
 
         # We can't easily get the session here without DI, so return claims
         # In a real setup you'd inject the session; for now return from claims

@@ -10,11 +10,9 @@ _logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.oauth import OAuthAccount
-from ..models.session import Session
 from ..models.user import User
 from ..providers.base import OAuthProvider, OAuthUserInfo
 from ..repositories.oauth import OAuthAccountRepository
-from ..repositories.session import SessionRepository
 from ..repositories.user import UserRepository
 from .crypto import TokenCipher
 from .token import TokenService
