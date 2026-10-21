@@ -31,7 +31,8 @@ class PlatformScope:
 
 
 def token_tenant(user: AuthPayload) -> str | None:
-    return (user.get("user") or {}).get("tenant_id")
+    tenant_id = user.get("tenant_id") or (user.get("user") or {}).get("tenant_id")
+    return tenant_id if tenant_id else None
 
 
 def granted(user: AuthPayload) -> set[str]:
