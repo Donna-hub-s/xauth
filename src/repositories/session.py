@@ -27,6 +27,32 @@ class SessionRepository(BaseRepository[Session]):
         )
         return list(result.scalars().all())
 
+    async def device_is_known(self, user_id: str, device_id: str) -> bool:
+        """Cet utilisateur s'est-il déjà connecté depuis cet appareil ?
+
+        Les sessions révoquées et expirées comptent : se déconnecter d'un appareil n'en fait pas
+        un appareil inconnu, sinon chaque reconnexion déclencherait une alerte.
+
+        Le filtre sur `user_id` est une règle de sécurité, pas une optimisation : sans lui,
+        présenter l'identifiant d'autrui révélerait s'il existe, donc permettrait de sonder les
+        appareils d'un autre compte.
+        """
+        result = await self.session.execute(
+            select(Session.id)
+            .where(Session.user_id == user_id)
+            .where(Session.device_fingerprint == device_id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def has_any_session(self, user_id: str) -> bool:
+        """L'utilisateur a-t-il déjà ouvert une session ? Sert à ne pas alerter sur la toute
+        première connexion du compte : un « nouvel appareil » y est la normalité, pas un signal."""
+        result = await self.session.execute(
+            select(Session.id).where(Session.user_id == user_id).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def revoke_all_for_user(self, user_id: str) -> None:
         sessions = await self.get_active_sessions_for_user(user_id)
         for s in sessions:
