@@ -46,6 +46,8 @@ def auth_router(auth_service: AuthService, token_service: TokenService) -> APIRo
                 password=body.password,
                 tenant_id=body.tenant_id,
                 ip_address=ip,
+                device_fingerprint=body.device_id,
+                user_agent=request.headers.get("user-agent"),
             )
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc))

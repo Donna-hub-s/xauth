@@ -1,5 +1,5 @@
 from typing import Optional
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserRootSchemas(BaseModel):
@@ -37,6 +37,11 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
     tenant_id: Optional[str] = None
+    # Identité de l'appareil déjà connue du navigateur (voir services/devices.py). Donnée NON
+    # FIABLE : elle n'est reconnue que si elle figure dans une session de CE compte, et elle
+    # n'authentifie rien. Absente à la première connexion depuis un appareil — le serveur en
+    # émet alors une et la renvoie dans `TokenResponse.device_id`.
+    device_id: Optional[str] = Field(default=None, max_length=128)
 
 
 class RefreshRequest(BaseModel):
@@ -70,6 +75,9 @@ class TokenResponse(BaseModel):
     # sans jamais faire circuler un refresh_token utilisable (donc exploitable
     # via /auth/refresh) avant que le code TOTP ne soit vérifié.
     mfa_token: Optional[str] = None
+    # Identité de l'appareil émise (ou reconnue) par le serveur, à conserver côté navigateur et
+    # à renvoyer aux connexions suivantes. Absente quand aucun jeton n'est émis (étape MFA).
+    device_id: Optional[str] = None
     needs_tenant_setup: bool = False  # ← true si l'user n'appartient à aucun tenant
     tenants: Optional[list[TenantInfo]] = None  # ← présent uniquement si multi-tenant
 

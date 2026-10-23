@@ -15,6 +15,7 @@ from ..models.user import TenantMember, User
 from ..repositories.session import SessionRepository
 from ..repositories.tenant import TenantRepository
 from ..repositories.user import TenantMemberRepository, UserRepository
+from . import devices
 from .audit import AuditService
 from .events import XAuthEvents
 from .token import TokenService
@@ -77,6 +78,7 @@ class AuthService:
         cache: Any = None,
         user_role_name: str = "user",
         owner_role_name: str = "owner",
+        auth_email: Any = None,
     ) -> None:
         self._session = session
         self._token = token_service
@@ -85,6 +87,10 @@ class AuthService:
         self._user_role_name = user_role_name
         # Rôle attribué au créateur d'un espace (setup_create_tenant).
         self._owner_role_name = owner_role_name
+        # AuthEmailSender, pour l'alerte « nouvel appareil ». Optionnel : sans lui la connexion
+        # se déroule normalement, seul l'avertissement manque (et il est journalisé en audit
+        # de toute façon).
+        self._auth_email = auth_email
 
     async def register(
         self,
@@ -164,7 +170,14 @@ class AuthService:
             user_id=session.user_id,
             tenant_id=session.tenant_id,
             refresh_token=new_refresh_hashed,
+            # L'appareil est le MÊME : un rafraîchissement de jeton fait tourner la ligne de
+            # session, il ne change pas d'ordinateur. Tout ce qui décrit l'appareil est donc
+            # reporté, `created_at` compris — sinon « connecté le » se réinitialiserait à
+            # chaque rotation, qui a lieu en continu, et l'appareil redeviendrait « inconnu ».
             device_fingerprint=session.device_fingerprint,
+            user_agent=session.user_agent,
+            device_label=session.device_label,
+            created_at=session.created_at,
             ip_address=ip_address or session.ip_address,
             expires_at=datetime.now(tz=timezone.utc)
             + timedelta(days=self._token._refresh_expire),
@@ -218,6 +231,7 @@ class AuthService:
         tenant_id: Optional[str] = None,
         ip_address: Optional[str] = None,
         device_fingerprint: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> dict[str, Any]:
         """login method """
         audit = AuditService(self._session)
@@ -243,7 +257,63 @@ class AuthService:
             membership = await TenantMemberRepository(self._session).get_membership(user.id, tenant_id)
             if membership is None:
                 raise ValueError("User is not a member of this tenant")
-        return await self._finalize_login(user, tenant_id, ip_address, device_fingerprint)
+        return await self._finalize_login(user, tenant_id, ip_address, device_fingerprint, user_agent)
+
+    async def _resolve_device(
+        self,
+        user: User,
+        presented_id: Optional[str],
+        user_agent: Optional[str],
+    ) -> tuple[str, bool]:
+        """Identité de l'appareil qui se connecte : `(identifiant, est_nouveau)`.
+
+        Un identifiant est reconnu seulement s'il figure déjà dans une session DE CET
+        UTILISATEUR (`device_is_known`) : reconnaître celui d'autrui révélerait son existence.
+        Tout le reste — absent, mal formé, inconnu — donne un identifiant neuf, et le serveur
+        en est la seule source (le navigateur ne choisit jamais le sien).
+
+        « Nouveau » ne déclenche une alerte que si le compte avait déjà des sessions : sur la
+        toute première connexion, un appareil inconnu est la normalité et non un signal.
+        """
+        repo = SessionRepository(self._session)
+        normalized = devices.normalize_id(presented_id)
+        if normalized is not None and await repo.device_is_known(user.id, normalized):
+            return normalized, False
+        first_login_ever = not await repo.has_any_session(user.id)
+        return devices.mint(), not first_login_ever
+
+    async def _warn_new_device(
+        self,
+        user: User,
+        ip_address: Optional[str],
+        user_agent: Optional[str],
+    ) -> None:
+        """Avertit l'utilisateur qu'un appareil jamais vu vient d'ouvrir une session.
+
+        Par e-mail, pas par notification dans l'application : si la connexion est celle d'un
+        attaquant, un message affiché dans l'app lui serait adressé à LUI. L'e-mail part vers
+        l'adresse du compte, donc vers la victime.
+
+        Ne lève jamais : un avertissement qui ne part pas ne doit pas empêcher une connexion
+        légitime d'aboutir (même règle que tous les envois de xauth).
+        """
+        await AuditService(self._session).log_event(
+            action="login.new_device",
+            user_id=user.id,
+            ip_address=ip_address,
+            metadata={"device": devices.label(user_agent) or "inconnu"},
+        )
+        if self._auth_email is None:
+            return
+        try:
+            await self._auth_email.new_device(
+                to=user.email,
+                username=getattr(user, "username", None) or user.email,
+                device=devices.label(user_agent) or "Appareil inconnu",
+                ip_address=ip_address or "inconnue",
+            )
+        except Exception:  # noqa: BLE001 — informer est un confort, se connecter est le travail
+            _logger.warning("[xauth] alerte « nouvel appareil » non envoyée", exc_info=True)
 
     async def _issue_tokens(
         self,
@@ -251,6 +321,7 @@ class AuthService:
         tenant_id: Optional[str],
         ip_address: Optional[str] = None,
         device_fingerprint: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Émet un access_token + refresh_token réels et crée la Session — SEUL
@@ -263,18 +334,24 @@ class AuthService:
         refresh_token_hashed = self._token.hash_token(refresh_token_plain)
         access_token, jti = self._token.create_access_token(user_id=user.id, tenant_id=tenant_id)
 
+        device_id, is_new_device = await self._resolve_device(user, device_fingerprint, user_agent)
+
         session_repo = SessionRepository(self._session)
         session = Session(
             user_id=user.id,
             tenant_id=tenant_id,
             refresh_token=refresh_token_hashed,
-            device_fingerprint=device_fingerprint,
+            device_fingerprint=device_id,
+            user_agent=devices.clean_user_agent(user_agent),
+            device_label=devices.label(user_agent),
             ip_address=ip_address,
             expires_at=datetime.now(tz=timezone.utc)
             + timedelta(days=self._token._refresh_expire),
             last_jti=jti,
         )
         await session_repo.save(session)
+        if is_new_device:
+            await self._warn_new_device(user, ip_address, user_agent)
 
         await AuditService(self._session).log_event(
             action="login.success",
@@ -293,6 +370,10 @@ class AuthService:
             "access_token": access_token,
             "refresh_token": refresh_token_plain,
             "token_type": "bearer",
+            # Identité de l'appareil, à conserver par le navigateur et à renvoyer aux
+            # connexions suivantes. C'est la SEULE façon pour le client de l'obtenir : il ne
+            # choisit jamais la sienne, et elle n'authentifie rien (voir services/devices.py).
+            "device_id": device_id,
             "user_id": user.id,
             "tenant_id": tenant_id,
             "mfa_required": False,
@@ -304,6 +385,7 @@ class AuthService:
         user: User,
         ip_address: Optional[str] = None,
         device_fingerprint: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Suite d'une authentification COMPLÈTE sans espace désigné :
@@ -312,7 +394,7 @@ class AuthService:
         """
         memberships = await TenantMemberRepository(self._session).get_memberships_for_user(user.id)
         if len(memberships) == 1:
-            return await self._issue_tokens(user, memberships[0].tenant_id, ip_address, device_fingerprint)
+            return await self._issue_tokens(user, memberships[0].tenant_id, ip_address, device_fingerprint, user_agent)
 
         refresh_token_plain = self._token.create_refresh_token()
         refresh_token_hashed = self._token.hash_token(refresh_token_plain)
@@ -372,6 +454,7 @@ class AuthService:
         tenant_id: Optional[str],
         ip_address: Optional[str] = None,
         device_fingerprint: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Point de passage obligé une fois le tenant résolu à une valeur
@@ -385,8 +468,8 @@ class AuthService:
         """
         if not user.mfa_enabled:
             if tenant_id is None:
-                return await self._start_workspace_choice(user, ip_address, device_fingerprint)
-            return await self._issue_tokens(user, tenant_id, ip_address, device_fingerprint)
+                return await self._start_workspace_choice(user, ip_address, device_fingerprint, user_agent)
+            return await self._issue_tokens(user, tenant_id, ip_address, device_fingerprint, user_agent)
 
         if not self._cache:
             # Ne devrait pas arriver en prod (cache toujours injecté) —
@@ -400,7 +483,12 @@ class AuthService:
             {
                 "user_id": user.id,
                 "tenant_id": tenant_id,
+                # L'appareil doit traverser la deuxième étape : sans ces deux valeurs, toute
+                # connexion d'un compte à double authentification arriverait sans appareil
+                # connu, donc déclencherait une alerte à chaque fois et s'afficherait
+                # « appareil inconnu ».
                 "device_fingerprint": device_fingerprint,
+                "user_agent": user_agent,
             },
             ttl=_MFA_LOGIN_TOKEN_TTL,
         )
@@ -456,12 +544,15 @@ class AuthService:
             raise ValueError("Compte introuvable ou désactivé.")
 
         if not pending.get("tenant_id"):
-            return await self._start_workspace_choice(user, ip_address, pending.get("device_fingerprint"))
+            return await self._start_workspace_choice(
+                user, ip_address, pending.get("device_fingerprint"), pending.get("user_agent")
+            )
         return await self._issue_tokens(
             user,
             pending["tenant_id"],
             ip_address,
             pending.get("device_fingerprint"),
+            pending.get("user_agent"),
         )
 
 

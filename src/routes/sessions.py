@@ -7,14 +7,28 @@ from pydantic import BaseModel
 from xcore.kernel.api import AuthPayload, get_current_user
 
 from ..repositories.session import SessionRepository
+from ..services import devices
 from ..services.token import TokenService
 
 
 class SessionResponse(BaseModel):
+    """Un appareil connecté, tel que son propriétaire le voit.
+
+    Deux champs sont volontairement ABSENTS : l'identifiant d'appareil et le User-Agent brut.
+    Le premier n'a rien à faire ici — le navigateur détient déjà le sien, et renvoyer ceux des
+    autres appareils donnerait à un onglet compromis de quoi se faire passer pour un appareil
+    connu, donc d'esquiver l'alerte. Le second est une chaîne technique qui n'apprend rien à
+    personne : `device_label` et `os` en sont la version lisible.
+    """
+
     id: str
     tenant_id: str | None
     ip_address: str | None
-    device_fingerprint: str | None
+    device_label: str | None
+    os: str | None
+    # Ouverture de la session. None pour les sessions antérieures à cette colonne : l'interface
+    # dit alors « inconnue », ce qui est exact.
+    created_at: str | None
     last_seen: str
     expires_at: str
     is_current: bool = False
@@ -48,7 +62,12 @@ def sessions_router(db: Any, token_service: TokenService, cache: Any = None) -> 
                     "id": s.id,
                     "tenant_id": s.tenant_id,
                     "ip_address": s.ip_address,
-                    "device_fingerprint": s.device_fingerprint,
+                    # Étiquette enregistrée à la connexion ; recalculée depuis le User-Agent
+                    # pour les sessions ouvertes avant qu'elle n'existe, plutôt que de les
+                    # afficher « inconnu » alors que l'information est là.
+                    "device_label": s.device_label or devices.label(s.user_agent),
+                    "os": devices.system_of(s.user_agent),
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
                     "last_seen": s.last_seen.isoformat(),
                     "expires_at": s.expires_at.isoformat(),
                     "is_current": bool(current_jti) and s.last_jti == current_jti,

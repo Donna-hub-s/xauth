@@ -11,7 +11,25 @@ from xcore.kernel.api import (
 )
 from xcore.sdk import AutoDispatchMixin, TrustedBase, get_logger
 
+from extensions.commons.db_columns import ensure_columns
+
 logger = get_logger("xauth.plugin")
+
+# Identité d'appareil, OS et date de connexion sur une session (models/session.py).
+#
+# `ensure_columns` plutôt qu'une migration Alembic, bien que xauth ait un dossier
+# `migrations/` : son unique révision est un `pass` vide, le schéma réel vient donc de
+# `create_all` — qui ne modifie JAMAIS une table déjà en place — et les échecs du
+# MigrationRunner sont journalisés puis ignorés (voir _initialize_tables). Une colonne
+# ajoutée par ce dispositif-là pourrait donc ne jamais arriver, en silence. L'ALTER TABLE
+# gardé par une vérification d'existence est le motif déjà utilisé par chat, profile et rag.
+_SESSION_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("user_agent", "VARCHAR(500)", "VARCHAR(500)"),
+    ("device_label", "VARCHAR(120)", "VARCHAR(120)"),
+    # Les sessions déjà ouvertes n'ont pas de date d'ouverture connue : NULL se lit
+    # « inconnue » dans l'interface, ce qui est exact, là où une date inventée mentirait.
+    ("created_at", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE"),
+)
 
 from .backend import XAuthBackend
 from .ipc import IPCCommands
@@ -67,6 +85,7 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         _logger = _log.getLogger("hub.xauth")
         async with db.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await ensure_columns(conn, "xauth_sessions", _SESSION_ADDED_COLUMNS, logger=_logger)
         _logger.info("[xauth] Tables créées / vérifiées")
         _migrations_dir = Path(__file__).parent.parent / "migrations"
         # str(engine.url) MASQUE le mot de passe ("***", comportement SQLAlchemy
@@ -288,13 +307,17 @@ def _auth_router_with_db(
     async def login(body: LoginRequest, request: Request):
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            # `auth_email` : seules les routes qui ÉMETTENT des jetons en ont besoin — c'est là
+            # qu'un appareil jamais vu peut apparaître, donc qu'une alerte peut partir.
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name, auth_email=email_service.auth)
             try:
                 result = await svc.login(
                     email=body.email,
                     password=body.password,
                     tenant_id=body.tenant_id,
                     ip_address=ip,
+                    device_fingerprint=body.device_id,
+                    user_agent=request.headers.get("user-agent"),
                 )
                 await session.commit()
                 return result
@@ -312,7 +335,7 @@ def _auth_router_with_db(
         """
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, owner_role_name=owner_role_name, auth_email=email_service.auth)
             try:
                 result = await svc.verify_mfa_login(
                     mfa_token=body.mfa_token,
